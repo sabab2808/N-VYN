@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
-  Activity, Bell, BookOpen, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight,
+  Activity, Award, Bell, BookOpen, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight,
   CircleHelp, Clock3, Download, ExternalLink, FileText, GraduationCap, LayoutDashboard,
   ListTodo, LoaderCircle, LogOut, Mail, Menu, Moon, Plus, RefreshCw, Search, Settings,
   ShieldCheck, SlidersHorizontal, Sparkles, Sun, Wallet, X,
@@ -9,14 +9,19 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { ResearchSearchPage } from './ResearchSearchPage'
+import { ScholarshipsPage } from './ScholarshipsPage'
+import { fundingStatus, rankScholarshipOpportunities, tierFor } from './lib/scholarshipLogic'
 import { initialWorkspace } from './data'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import { parseApplicantWorkbook } from './lib/workbook'
-import type { Category, Country, Evidence, Profile, Stage, Task, University, Verification, Workspace } from './types'
+import { safeHttpsUrl, safeMailto } from './lib/safeUrl'
+import { isValidBudgetBackup, isValidDocumentsBackup, isValidProfessorContactsBackup, isValidWorkspaceBackup } from './lib/backupValidation'
+import type { AcceptanceStatus, Category, ClaimEvidence, Country, Evidence, Profile, ProgramRequirement, RecommendationLetter, ScholarshipOpportunity, Stage, Task, University, Verification, Workspace } from './types'
 
-type View = 'Overview' | 'University research' | 'Official search' | 'Applications' | 'Tasks & calendar' | 'Funding & budget' | 'Documents' | 'Professor outreach' | 'Sources & reports' | 'Settings'
+type View = 'Overview' | 'University research' | 'Scholarships & funding' | 'Official search' | 'Applications' | 'Tasks & calendar' | 'Funding & budget' | 'Documents' | 'Professor outreach' | 'Sources & reports' | 'Settings'
 const nav: { label: View; icon: typeof LayoutDashboard }[] = [
   { label: 'Overview', icon: LayoutDashboard }, { label: 'University research', icon: GraduationCap },
+  { label: 'Scholarships & funding', icon: Award },
   { label: 'Official search', icon: Search },
   { label: 'Applications', icon: Activity }, { label: 'Tasks & calendar', icon: CalendarDays },
   { label: 'Funding & budget', icon: Wallet }, { label: 'Documents', icon: FileText },
@@ -35,6 +40,24 @@ const badge: Record<Verification, string> = {
 const today = (timezone: string) => new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
 const newId = () => crypto.randomUUID()
 const normalizeUniversityName = (name: string) => name.trim().toLowerCase().replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim()
+const normalizeOpportunity = (value: Partial<ScholarshipOpportunity>): ScholarshipOpportunity => {
+  const defaults = initialWorkspace.opportunities[0]
+  return {
+    ...defaults, ...value,
+    tuition: { ...defaults.tuition, ...value.tuition },
+    livingStipend: { ...defaults.livingStipend, ...value.livingStipend },
+    housing: { ...defaults.housing, ...value.housing },
+    healthInsurance: { ...defaults.healthInsurance, ...value.healthInsurance },
+    airfare: { ...defaults.airfare, ...value.airfare },
+    mandatoryFees: { ...defaults.mandatoryFees, ...value.mandatoryFees },
+    upfrontCash: { ...defaults.upfrontCash, ...value.upfrontCash },
+    claimEvidence: Array.isArray(value.claimEvidence) ? value.claimEvidence : [],
+    applicationEvidence: Array.isArray(value.applicationEvidence) ? value.applicationEvidence : [],
+    languageEvidence: Array.isArray(value.languageEvidence) ? value.languageEvidence : [],
+    waiverProfileEligibility: value.waiverProfileEligibility ?? 'Unverified',
+    moiProfileEligibility: value.moiProfileEligibility ?? 'Unverified',
+  }
+}
 const dateLabel = (value?: string) => value ? new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`)) : 'Not confirmed'
 const timestampLabel = (value: string | undefined, timezone: string) => {
   if (!value) return 'Never'
@@ -59,7 +82,7 @@ const initialDocuments: DocumentRecord[] = [
   { id: '30000000-0000-4000-8000-000000000001', name: 'Passport', type: 'Identity', issued: '', expiry: '', status: 'Available', translation: 'Not reviewed', notarization: 'Not reviewed', apostille: 'Not reviewed' },
   { id: '30000000-0000-4000-8000-000000000002', name: 'Academic transcript', type: 'Academic', issued: '', expiry: '', status: 'Available', translation: 'Not reviewed', notarization: 'Not reviewed', apostille: 'Not reviewed' },
   { id: '30000000-0000-4000-8000-000000000003', name: 'Medium of Instruction letter', type: 'Academic', issued: '', expiry: '', status: 'Available', translation: 'Not reviewed', notarization: 'Not reviewed', apostille: 'Not reviewed' },
-  { id: '30000000-0000-4000-8000-000000000004', name: 'IELTS score report', type: 'Language', issued: '', expiry: '', status: 'Booked â€” result pending', translation: 'Not reviewed', notarization: 'Not reviewed', apostille: 'Not reviewed' },
+  { id: '30000000-0000-4000-8000-000000000004', name: 'IELTS score report', type: 'Language', issued: '', expiry: '', status: 'Needed', translation: 'Not reviewed', notarization: 'Not reviewed', apostille: 'Not reviewed' },
 ]
 const databaseDocumentStatus: Record<DocumentStatus, string> = {
   Available: 'available', Needed: 'needed', 'In progress': 'in_progress', 'Booked â€” result pending': 'booked_result_pending',
@@ -69,6 +92,14 @@ const uiDocumentStatus = (status: string): DocumentStatus => ({
   available: 'Available', needed: 'Needed', in_progress: 'In progress', booked_result_pending: 'Booked â€” result pending',
 }[status] as DocumentStatus) ?? 'Needed'
 const isEvidenceStale = (checkedAt?: string) => !checkedAt || Date.now() - new Date(checkedAt).getTime() > 30 * 24 * 60 * 60 * 1000
+const isFreshOfficialEvidence = (evidence: ClaimEvidence, intake: string) => {
+  const checkedAt = new Date(`${evidence.checkedAt}T00:00:00Z`).getTime()
+  return evidence.status === 'confirmed' && evidence.intake === intake && evidence.url.startsWith('https://') &&
+    evidence.quote.trim() !== '' && Number.isFinite(checkedAt) && checkedAt <= Date.now() &&
+    Date.now() - checkedAt <= 90 * 24 * 60 * 60 * 1000
+}
+const hasCurrentRequirementEvidence = (requirement: ProgramRequirement, intake: string) =>
+  (requirement.evidence ?? []).some(evidence => isFreshOfficialEvidence(evidence, intake))
 
 function readLocal(key: string): Workspace {
   try {
@@ -85,6 +116,9 @@ function readLocal(key: string): Workspace {
         profile: { ...structuredClone(initialWorkspace.profile), ...saved.profile,
           name: saved.profile?.name === 'Applicant' ? initialWorkspace.profile.name : saved.profile?.name ?? initialWorkspace.profile.name },
         universities,
+        opportunities: Array.isArray(saved.opportunities)
+          ? saved.opportunities.map(opportunity => normalizeOpportunity(opportunity))
+          : structuredClone(initialWorkspace.opportunities),
         tasks: Array.isArray(saved.tasks) ? saved.tasks : structuredClone(initialWorkspace.tasks),
       }
     }
@@ -126,7 +160,7 @@ function App() {
   const [cloudDataUserId, setCloudDataUserId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
   const [drawer, setDrawer] = useState<University | null>(null)
-  const [modal, setModal] = useState<'university' | 'task' | 'profile' | 'auth' | 'workbook' | null>(null)
+  const [modal, setModal] = useState<'university' | 'task' | 'profile' | 'readiness' | 'auth' | 'workbook' | null>(null)
   const [authBusy, setAuthBusy] = useState(false)
   const [authAction, setAuthAction] = useState<'in' | 'up'>('in')
   const [filter, setFilter] = useState('All')
@@ -136,10 +170,11 @@ function App() {
   const [documents, setDocuments] = useState<DocumentRecord[]>(() => readDocuments('kcc-documents:guest'))
   const [docName, setDocName] = useState('')
   const [docType, setDocType] = useState('Academic')
-  const [taskForm, setTaskForm] = useState({ title: '', dueDate: '', priority: 'Medium' as Task['priority'] })
+  const [taskForm, setTaskForm] = useState({ title: '', dueDate: '', reminderAt: '', priority: 'Medium' as Task['priority'] })
   const [uniForm, setUniForm] = useState({ name: '', city: '', program: '', url: '', category: 'Match' as Category, country: 'South Korea' as Country })
   const [profileForm, setProfileForm] = useState<Profile>(workspace.profile)
   const [pendingWorkbook, setPendingWorkbook] = useState<Awaited<ReturnType<typeof parseApplicantWorkbook>> | null>(null)
+  const [remindersEnabled, setRemindersEnabled] = useState(() => localStorage.getItem('kcc-reminders-enabled') === 'true')
 
   useEffect(() => {
     const key = `korea-command-center:${userId ?? 'guest'}`
@@ -217,6 +252,26 @@ function App() {
   }, [dark])
 
   useEffect(() => {
+    if (!remindersEnabled || !('Notification' in window) || Notification.permission !== 'granted') return
+    const checkReminders = () => {
+      const now = Date.now()
+      let notified: string[] = []
+      try { notified = JSON.parse(localStorage.getItem('kcc-notified-reminders') ?? '[]') as string[] }
+      catch (error) { console.error('Could not read reminder history.', error) }
+      workspace.tasks.filter(task => !task.done && task.reminderAt && new Date(task.reminderAt).getTime() <= now &&
+        !notified.includes(task.id)).forEach(task => {
+        new Notification('Master’s application reminder', { body: task.title })
+        notified.push(task.id)
+      })
+      try { localStorage.setItem('kcc-notified-reminders', JSON.stringify(notified)) }
+      catch (error) { console.error('Could not save reminder history.', error) }
+    }
+    checkReminders()
+    const timer = window.setInterval(checkReminders, 60_000)
+    return () => window.clearInterval(timer)
+  }, [remindersEnabled, workspace.tasks])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
@@ -246,17 +301,18 @@ function App() {
       setDocuments(readDocuments(`kcc-documents:${uid}`))
       setUserId(uid)
       setEmail(data.session.user.email ?? '')
-      const [profile, universities, tasks, programs, applications, evidence, failures, cloudBudget, cloudDocuments, sourceChangesResult] = await Promise.all([
+      const [profile, universities, tasks, programs, applications, evidence, failures, cloudBudget, cloudDocuments, sourceChangesResult, opportunitiesResult] = await Promise.all([
         supabase!.from('profiles').select('*').eq('id', uid).maybeSingle(),
         supabase!.from('universities').select('id,name,city,country,intake_label,deadline_note,planning_tier,research_notes,category,rank,coverage_summary').order('created_at'),
         supabase!.from('tasks').select('*').order('due_date'),
-        supabase!.from('programs').select('id,university_id,name,research_area').order('created_at'),
-        supabase!.from('applications').select('university_id,stage').order('created_at'),
+        supabase!.from('programs').select('id,university_id,name,research_area,program_details').order('created_at'),
+        supabase!.from('applications').select('university_id,stage,submitted_at,decision_at,decision,notes,next_action').order('created_at'),
         supabase!.from('source_evidence').select('id,university_id,source_type,url,intake,published_at,last_checked_at,verification_status,verifier_note,needs_review').order('created_at'),
         supabase!.from('refresh_logs').select('id,checked_at,error_message,source_evidence_id').eq('outcome', 'failed').order('checked_at', { ascending: false }).limit(5),
         supabase!.from('budget_scenarios').select('*').eq('user_id', uid).maybeSingle(),
         supabase!.from('documents').select('*').order('created_at'),
         supabase!.from('source_changes').select('id,source_evidence_id,old_sha256,new_sha256,detected_at,review_status,old_content_snapshot,new_content_snapshot').order('detected_at', { ascending: false }).limit(100),
+        supabase!.from('scholarship_opportunities').select('id,opportunity_data').order('created_at'),
       ])
       if (!alive) return
       if (universities.error) console.error('Could not load universities.', universities.error)
@@ -269,8 +325,12 @@ function App() {
       if (cloudBudget.error) console.error('Could not load budget scenario.', cloudBudget.error)
       if (cloudDocuments.error) console.error('Could not load document metadata.', cloudDocuments.error)
       if (sourceChangesResult.error) console.error('Could not load source change history.', sourceChangesResult.error)
+      if (opportunitiesResult.error) console.error('Could not load scholarship opportunity records.', opportunitiesResult.error)
       setRefreshFailures(failures.data ?? [])
-      const loadErrors = [cloudBudget.error, cloudDocuments.error, sourceChangesResult.error].filter(Boolean)
+      const loadErrors = [
+        universities.error, profile.error, tasks.error, programs.error, applications.error, evidence.error,
+        failures.error, cloudBudget.error, cloudDocuments.error, sourceChangesResult.error, opportunitiesResult.error,
+      ].filter(Boolean)
       if (loadErrors.length) setToast(`Some account data could not be loaded: ${loadErrors.map(error => error!.message).join('; ')}`)
       if (!cloudBudget.error) setBudget(cloudBudget.data ? {
         currency: cloudBudget.data.currency,
@@ -305,7 +365,7 @@ function App() {
           } as SourceChange]
         }))
       }
-      if (!cloudBudget.error && !cloudDocuments.error) setCloudDataUserId(uid)
+      if (loadErrors.length === 0) setCloudDataUserId(uid)
       setWorkspace(readLocal(`korea-command-center:${uid}`))
       setWorkspace(prev => ({
         ...prev,
@@ -321,6 +381,11 @@ function App() {
           university: profile.data.institution, degree: profile.data.degree, cgpa: profile.data.cgpa,
           ssc: profile.data.ssc_gpa, hsc: profile.data.hsc_gpa, status: profile.data.academic_status,
           ielts: profile.data.language_test, target: profile.data.target_intake, needs: profile.data.funding_needs,
+          ieltsBookingDate: profile.data.ielts_booking_date ?? '',
+          ieltsResultDate: profile.data.ielts_result_date ?? '',
+          ieltsScore: profile.data.ielts_score ?? '',
+          upfrontBudget: profile.data.upfront_budget ?? '',
+          passportExpiry: profile.data.passport_expiry ?? '',
           timezone: profile.data.timezone,
         } : prev.profile,
         universities: universities.data?.length ? universities.data.map(row => ({
@@ -328,8 +393,17 @@ function App() {
           name: row.name, city: row.city ?? 'â€”',
           program: programs.data?.find(program => program.university_id === row.id)?.name ?? 'Not specified',
           area: programs.data?.find(program => program.university_id === row.id)?.research_area ?? 'Not specified',
+          applicationPortal: programs.data?.find(program => program.university_id === row.id)?.program_details?.applicationPortal ?? '',
+          supervisorConsent: programs.data?.find(program => program.university_id === row.id)?.program_details?.supervisorConsent ?? 'Unverified',
+          requirements: programs.data?.find(program => program.university_id === row.id)?.program_details?.requirements ?? [],
+          recommendations: programs.data?.find(program => program.university_id === row.id)?.program_details?.recommendations ?? [],
           category: row.category ?? 'Match', rank: row.rank ?? 99,
           stage: applications.data?.find(application => application.university_id === row.id)?.stage ?? 'Researching',
+          submittedAt: applications.data?.find(application => application.university_id === row.id)?.submitted_at ?? undefined,
+          decisionAt: applications.data?.find(application => application.university_id === row.id)?.decision_at ?? undefined,
+          decision: applications.data?.find(application => application.university_id === row.id)?.decision ?? undefined,
+          applicationNotes: applications.data?.find(application => application.university_id === row.id)?.notes ?? undefined,
+          nextAction: applications.data?.find(application => application.university_id === row.id)?.next_action ?? undefined,
           coverage: row.coverage_summary ?? 'Not confirmed',
           deadlineNote: row.deadline_note ?? undefined, planningTier: row.planning_tier ?? undefined,
           researchNotes: row.research_notes ?? undefined,
@@ -339,8 +413,12 @@ function App() {
             publishedAt: source.published_at ?? undefined, checkedAt: source.last_checked_at ?? undefined, needsReview: source.needs_review,
           })),
         })) : prev.universities,
+        opportunities: opportunitiesResult.data?.length
+          ? opportunitiesResult.data.map(row => normalizeOpportunity(row.opportunity_data as Partial<ScholarshipOpportunity>))
+          : prev.opportunities,
         tasks: tasks.data?.length ? tasks.data.map(row => ({
-          id: row.id, title: row.title, dueDate: row.due_date ?? '', priority: row.priority ?? 'Medium', done: row.status === 'done', description: row.description ?? '',
+          id: row.id, title: row.title, dueDate: row.due_date ?? '', reminderAt: row.reminder_at ?? undefined,
+          priority: row.priority ?? 'Medium', done: row.status === 'done', description: row.description ?? '',
         })) : prev.tasks,
       }))
     })
@@ -389,7 +467,87 @@ function App() {
   const funnel = stageOptions.map(stage => ({ stage, count: universities.filter(uni => !uni.isExample && uni.stage === stage).length }))
 
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), 3200) }
+  const configureReminders = async (enabled: boolean) => {
+    if (!enabled) {
+      localStorage.setItem('kcc-reminders-enabled', 'false')
+      setRemindersEnabled(false)
+      return
+    }
+    if (!('Notification' in window)) { notify('This browser does not support notifications.'); return }
+    const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
+    if (permission !== 'granted') { notify('Browser notification permission was not granted; reminders remain disabled.'); return }
+    localStorage.setItem('kcc-reminders-enabled', 'true')
+    setRemindersEnabled(true)
+    notify('Browser reminders enabled. This app must remain open for reminders to fire.')
+  }
   const patchWorkspace = (update: (current: Workspace) => Workspace) => setWorkspace(current => update(current))
+  const exportBackup = async () => {
+    let cloudAccountData: unknown
+    if (userId && supabase) {
+      const { data, error } = await supabase.rpc('export_my_account_data')
+      if (error) { notify(`Account export failed: ${error.message}. Apply the latest migrations first.`); return }
+      cloudAccountData = data
+    }
+    const owner = userId ?? 'guest'
+    const backup = {
+      format: 'korea-masters-command-center',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workspace,
+      budget,
+      documents,
+      professorContacts: readLocalValue<ProfessorRecord[]>(`kcc-professors:${owner}`, []),
+      cloudAccountData,
+      includesPrivateFileBytes: false,
+    }
+    const file = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+    const href = URL.createObjectURL(file)
+    const link = document.createElement('a')
+    link.href = href; link.download = `korea-masters-backup-${new Date().toISOString().slice(0, 10)}.json`
+    link.click(); URL.revokeObjectURL(href)
+    notify('Backup downloaded. Uploaded document files are not included.')
+  }
+  const importBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    if (userId) { notify('Import is limited to a guest workspace. Export the signed-in account first; cloud restore is not automatic.'); return }
+    try {
+      if (!file.size || file.size > 25 * 1024 * 1024) throw new Error('Choose a non-empty backup smaller than 25 MB.')
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('The backup must be a JSON object.')
+      const record = parsed as Record<string, unknown>
+      if (record.format !== 'korea-masters-command-center' || record.version !== 1 ||
+        !isValidWorkspaceBackup(record.workspace) || !isValidBudgetBackup(record.budget) ||
+        !isValidDocumentsBackup(record.documents) || !isValidProfessorContactsBackup(record.professorContacts))
+        throw new Error('This file is not a complete, valid command-center backup.')
+      localStorage.setItem('kcc-professors:guest', JSON.stringify(record.professorContacts))
+      setWorkspace({
+        ...record.workspace,
+        opportunities: record.workspace.opportunities.map(normalizeOpportunity),
+      })
+      setBudget({ ...emptyBudget, ...(record.budget as Budget) })
+      setDocuments(record.documents as DocumentRecord[])
+      notify('Backup imported into this guest browser workspace.')
+    } catch (error) {
+      notify(`Backup import failed: ${error instanceof Error ? error.message : 'Invalid backup file.'}`)
+    }
+  }
+  const deleteAccount = async () => {
+    if (!userId || !supabase) { notify('Sign in to request account deletion.'); return }
+    if (!window.confirm('Permanently delete your account, all cloud records, and private uploaded documents? Download a backup first. This cannot be undone.')) return
+    const { error } = await supabase.functions.invoke('delete-my-account')
+    if (error) { notify(`Account deletion failed: ${error.message}. Confirm the delete-my-account Edge Function is deployed.`); return }
+    for (const key of [`korea-command-center:${userId}`, `kcc-budget:${userId}`, `kcc-documents:${userId}`, `kcc-professors:${userId}`])
+      localStorage.removeItem(key)
+    const { error: signOutError } = await supabase.auth.signOut()
+    setUserId(null); setEmail(''); setCloudDataUserId(null)
+    setWorkspace(readLocal('korea-command-center:guest'))
+    setBudget(readBudget('kcc-budget:guest')); setDocuments(readDocuments('kcc-documents:guest'))
+    notify(signOutError
+      ? 'Account and cloud data deleted, but the local sign-out failed. Sign out manually or clear this browser session.'
+      : 'Account and cloud data deleted.')
+  }
   const saveUniversity = async (uni: University) => {
     if (supabase && userId) {
       const { error } = await supabase.from('universities').upsert({
@@ -405,6 +563,12 @@ function App() {
       const programWrite = await supabase.from('programs').upsert({
         id: programId, user_id: userId, university_id: uni.id, name: uni.program,
         research_area: uni.area === 'Not specified' ? null : uni.area,
+        program_details: {
+          applicationPortal: uni.applicationPortal ?? '',
+          supervisorConsent: uni.supervisorConsent ?? 'Unverified',
+          requirements: uni.requirements ?? [],
+          recommendations: uni.recommendations ?? [],
+        },
       })
       if (programWrite.error) { notify(`Program save failed: ${programWrite.error.message}`); return false }
       const existingApplication = await supabase.from('applications').select('id').eq('university_id', uni.id).maybeSingle()
@@ -412,6 +576,11 @@ function App() {
       const applicationWrite = await supabase.from('applications').upsert({
         id: existingApplication.data?.id ?? newId(), user_id: userId,
         university_id: uni.id, program_id: programId, stage: uni.stage,
+        submitted_at: uni.submittedAt ?? null,
+        decision_at: uni.decisionAt ?? null,
+        decision: uni.decision ?? null,
+        notes: uni.applicationNotes ?? '',
+        next_action: uni.nextAction ?? null,
       })
       if (applicationWrite.error) { notify(`Application save failed: ${applicationWrite.error.message}`); return false }
       for (const source of uni.evidence) {
@@ -435,6 +604,25 @@ function App() {
     }
     patchWorkspace(current => ({ ...current, universities: [...current.universities.filter(item => item.id !== uni.id && normalizeUniversityName(item.name) !== normalizeUniversityName(uni.name)), { ...uni, isExample: false }] }))
     return true
+  }
+  const saveOpportunity = async (opportunity: ScholarshipOpportunity) => {
+    if (supabase && userId) {
+      const { error } = await supabase.from('scholarship_opportunities').upsert({
+        id: opportunity.id, user_id: userId, opportunity_data: opportunity,
+      })
+      if (error) throw new Error(`Scholarship opportunity save failed: ${error.message}`)
+    }
+    patchWorkspace(current => ({ ...current, opportunities: [
+      ...current.opportunities.filter(item => item.id !== opportunity.id), opportunity,
+    ] }))
+  }
+  const deleteOpportunity = async (opportunity: ScholarshipOpportunity) => {
+    if (supabase && userId) {
+      const { error } = await supabase.from('scholarship_opportunities').delete()
+        .eq('id', opportunity.id).eq('user_id', userId)
+      if (error) throw new Error(`Scholarship opportunity delete failed: ${error.message}`)
+    }
+    patchWorkspace(current => ({ ...current, opportunities: current.opportunities.filter(item => item.id !== opportunity.id) }))
   }
   const addUniversity = async (event: FormEvent) => {
     event.preventDefault()
@@ -588,13 +776,13 @@ function App() {
   const addTask = async (event: FormEvent) => {
     event.preventDefault()
     if (!taskForm.title.trim()) return
-    const task: Task = { id: newId(), ...taskForm, done: false }
+    const task: Task = { id: newId(), ...taskForm, reminderAt: taskForm.reminderAt || undefined, done: false }
     if (supabase && userId) {
-      const { error } = await supabase.from('tasks').insert({ id: task.id, user_id: userId, title: task.title, description: task.description ?? '', due_date: task.dueDate || null, priority: task.priority, status: 'todo' })
+      const { error } = await supabase.from('tasks').insert({ id: task.id, user_id: userId, title: task.title, description: task.description ?? '', due_date: task.dueDate || null, reminder_at: task.reminderAt ?? null, priority: task.priority, status: 'todo' })
       if (error) { notify(`Save failed: ${error.message}`); return }
     }
     patchWorkspace(current => ({ ...current, tasks: [...current.tasks, task] }))
-    setTaskForm({ title: '', dueDate: '', priority: 'Medium' }); setModal(null); notify('Task added.')
+    setTaskForm({ title: '', dueDate: '', reminderAt: '', priority: 'Medium' }); setModal(null); notify('Task added.')
   }
   const toggleTask = async (task: Task) => {
     if (supabase && userId) {
@@ -721,6 +909,10 @@ function App() {
         cgpa: profileForm.cgpa, ssc_gpa: profileForm.ssc, hsc_gpa: profileForm.hsc,
         academic_status: profileForm.status, language_test: profileForm.ielts, target_intake: profileForm.target,
         funding_needs: profileForm.needs, timezone: profileForm.timezone,
+        ielts_booking_date: profileForm.ieltsBookingDate || null,
+        ielts_result_date: profileForm.ieltsResultDate || null,
+        ielts_score: profileForm.ieltsScore, upfront_budget: profileForm.upfrontBudget,
+        passport_expiry: profileForm.passportExpiry || null,
       })
       if (error) { notify(`Profile save failed: ${error.message}`); return }
     }
@@ -769,35 +961,47 @@ function App() {
               <div><div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[.17em] text-teal"><span className="h-px w-5 bg-teal" />YOUR GRADUATE JOURNEY</div><h1 className="font-display text-[25px] font-bold tracking-[-.04em] sm:text-[29px]">{view === 'Overview' ? <>Good afternoon, {workspace.profile.name.trim().split(/\s+/).slice(0, 2).join(' ')}<span className="ml-2 text-[#c39c56]">.</span></> : view}</h1>              <p className="mt-1 text-[12px] text-slate-500">{view === 'Overview' ? 'A clear view of your path to a funded masterâ€™s degree.' : `Your ${workspace.profile.target} application workspace.`}</p></div>
               <div className="hidden items-center gap-2 sm:flex"><button onClick={() => setModal('task')} className="flex items-center gap-1.5 rounded-lg border border-[#e1dfd8] bg-white px-3 py-2 text-[11px] font-semibold hover:border-teal/40"><Plus size={14} />Quick task</button><button onClick={() => setModal('university')} className="flex items-center gap-1.5 rounded-lg bg-ink px-3.5 py-2 text-[11px] font-semibold text-white shadow-sm hover:bg-[#24434a]"><Plus size={14} />Add university</button></div>
             </div>
-            {!userId && <div className="surface mb-4 rounded-xl border border-[#eadfca] bg-[#fbf7ed] px-4 py-3 text-[10px] leading-relaxed text-[#806e48]">Local browser mode: workspace data is stored in unencrypted browser storage on this device. Configure Supabase authentication for account sync; private files are not uploaded by this MVP.</div>}
-            {view === 'Overview' && <Dashboard workspace={workspace} overdue={overdue} openTasks={openTasks} taskChart={taskChart} funnel={funnel} timezone={workspace.profile.timezone} onOpenTasks={() => setView('Tasks & calendar')} onOpenUniversities={() => setView('University research')} onComplete={toggleTask} onEditProfile={() => { setProfileForm(workspace.profile); setModal('profile') }} />}
+            {!userId && <div className="surface mb-4 rounded-xl border border-[#eadfca] bg-[#fbf7ed] px-4 py-3 text-[10px] leading-relaxed text-[#806e48]">Guest mode: workspace data is stored in unencrypted browser storage on this device. Sign in and configure Supabase to sync records and upload private documents.</div>}
+            {view === 'Overview' && <Dashboard workspace={workspace} documents={documents} overdue={overdue} openTasks={openTasks} taskChart={taskChart} funnel={funnel} timezone={workspace.profile.timezone} onOpenTasks={() => setView('Tasks & calendar')} onOpenUniversities={() => setView('University research')} onOpenScholarships={() => setView('Scholarships & funding')} onOpenDocuments={() => setView('Documents')} onOpenReadiness={() => { setProfileForm(workspace.profile); setModal('readiness') }} onComplete={toggleTask} onEditProfile={() => { setProfileForm(workspace.profile); setModal('profile') }} />}
             {view === 'University research' && <UniversityPage universities={searchMatches} filter={filter} setFilter={setFilter} countryFilter={countryFilter} setCountryFilter={setCountryFilter} selected={selected} setSelected={setSelected} onAdd={() => setModal('university')} onImportWorkbook={prepareWorkbookImport} onImportContext={importKoreaContext} onOpen={setDrawer} onStage={changeStage} onExport={exportCsv} />}
+            {view === 'Scholarships & funding' && <ScholarshipsPage opportunities={workspace.opportunities} profile={workspace.profile} onSave={saveOpportunity} onDelete={deleteOpportunity} />}
             {view === 'Official search' && <ResearchSearchPage country={countryFilter === 'All' ? 'South Korea' : countryFilter} timezone={workspace.profile.timezone} />}
             {view === 'Applications' && <ApplicationsPage universities={universities} onStage={changeStage} onOpen={setDrawer} />}
             {view === 'Tasks & calendar' && <TasksPage tasks={tasks} timezone={workspace.profile.timezone} onAdd={() => setModal('task')} onComplete={toggleTask} />}
-            {view === 'Funding & budget' && <BudgetPage budget={budget} setBudget={setBudget} />}
+            {view === 'Funding & budget' && <BudgetPage budget={budget} setBudget={setBudget} onOpenScholarships={() => setView('Scholarships & funding')} />}
             {view === 'Documents' && <DocumentsPage docs={documents} setDocs={setDocuments} name={docName} setName={setDocName} type={docType} setType={setDocType} onAdd={addDocument} authenticated={Boolean(userId)} userId={userId} cloudReady={Boolean(userId && cloudDataUserId === userId)} setToast={setToast} />}
             {view === 'Professor outreach' && <ProfessorPage storageKey={`kcc-professors:${userId ?? 'guest'}`} userId={userId} />}
-            {view === 'Sources & reports' && <SourcesPage universities={universities} failures={refreshFailures} changes={sourceChanges} timezone={workspace.profile.timezone} onRefresh={refreshSources} onReviewChange={reviewSourceChange} onExport={exportCsv} />}
-            {view === 'Settings' && <SettingsPage profile={workspace.profile} onEdit={() => { setProfileForm(workspace.profile); setModal('profile') }} userId={userId} />}
+            {view === 'Sources & reports' && <SourcesPage universities={universities} opportunities={workspace.opportunities} failures={refreshFailures} changes={sourceChanges} timezone={workspace.profile.timezone} onRefresh={refreshSources} onReviewChange={reviewSourceChange} onExport={exportCsv} />}
+            {view === 'Settings' && <SettingsPage profile={workspace.profile} onEdit={() => { setProfileForm(workspace.profile); setModal('profile') }} onEditReadiness={() => { setProfileForm(workspace.profile); setModal('readiness') }} userId={userId} cloudReady={Boolean(userId && cloudDataUserId === userId)} remindersEnabled={remindersEnabled} onReminderChange={configureReminders} onExport={exportBackup} onImport={importBackup} onDeleteAccount={deleteAccount} />}
             <footer className="mt-10 flex flex-wrap items-center justify-between gap-2 border-t border-[#e7e5de] py-4 text-[10px] text-slate-400"><span>{userId ? 'Authenticated workspace' : 'Browser-local workspace'} Â· Timezone: {workspace.profile.timezone}</span><span>Source facts are never verified automatically Â· Korea, Germany, and France</span></footer>
           </main>
         </div>
       </div>
       {toast && <div role="status" className="fixed bottom-5 right-5 z-[60] flex max-w-sm items-center gap-2 rounded-xl bg-[#17343b] px-4 py-3 text-[12px] text-white shadow-xl"><CheckCircle2 size={16} className="shrink-0 text-[#b7d5c8]" />{toast}</div>}
-      {modal === 'task' && <Modal title="Add a task" onClose={() => setModal(null)}><form onSubmit={addTask} className="space-y-4"><Field label="Task title"><input autoFocus required value={taskForm.title} onChange={event => setTaskForm({ ...taskForm, title: event.target.value })} placeholder="e.g. Ask professor for a short meeting" className="input" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Due date"><input type="date" value={taskForm.dueDate} onChange={event => setTaskForm({ ...taskForm, dueDate: event.target.value })} className="input" /></Field><Field label="Priority"><select className="input" value={taskForm.priority} onChange={event => setTaskForm({ ...taskForm, priority: event.target.value as Task['priority'] })}><option>High</option><option>Medium</option><option>Low</option></select></Field></div><ModalActions onCancel={() => setModal(null)} submit="Add task" /></form></Modal>}
+      {modal === 'task' && <Modal title="Add a task" onClose={() => setModal(null)}><form onSubmit={addTask} className="space-y-4"><Field label="Task title"><input autoFocus required value={taskForm.title} onChange={event => setTaskForm({ ...taskForm, title: event.target.value })} placeholder="e.g. Ask professor for a short meeting" className="input" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Due date"><input type="date" value={taskForm.dueDate} onChange={event => setTaskForm({ ...taskForm, dueDate: event.target.value })} className="input" /></Field><Field label="Reminder (browser must be open)"><input type="datetime-local" value={taskForm.reminderAt} onChange={event => setTaskForm({ ...taskForm, reminderAt: event.target.value })} className="input" /></Field><Field label="Priority"><select className="input" value={taskForm.priority} onChange={event => setTaskForm({ ...taskForm, priority: event.target.value as Task['priority'] })}><option>High</option><option>Medium</option><option>Low</option></select></Field></div><p className="text-[9px] text-slate-500">Browser notifications are best-effort; enable them in Settings and keep this app open.</p><ModalActions onCancel={() => setModal(null)} submit="Add task" /></form></Modal>}
       {modal === 'university' && <Modal title="Add university to research" onClose={() => setModal(null)}><form onSubmit={addUniversity} className="space-y-4"><Field label="University name"><input autoFocus required value={uniForm.name} onChange={event => setUniForm({ ...uniForm, name: event.target.value })} placeholder="Official institution name" className="input" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Country"><select className="input" value={uniForm.country} onChange={event => setUniForm({ ...uniForm, country: event.target.value as Country })}>{countries.map(country => <option key={country}>{country}</option>)}</select></Field><Field label="City"><input value={uniForm.city} onChange={event => setUniForm({ ...uniForm, city: event.target.value })} placeholder="City" className="input" /></Field></div><Field label="Program"><input value={uniForm.program} onChange={event => setUniForm({ ...uniForm, program: event.target.value })} placeholder="English-taught master's program to verify" className="input" /></Field><div className="grid grid-cols-2 gap-3"><Field label="Official admissions URL"><input type="url" value={uniForm.url} onChange={event => setUniForm({ ...uniForm, url: event.target.value })} placeholder="https://..." className="input" /></Field><Field label="Shortlist category"><select className="input" value={uniForm.category} onChange={event => setUniForm({ ...uniForm, category: event.target.value as Category })}>{categories.map(item => <option key={item}>{item}</option>)}</select></Field></div><p className="text-[10px] text-slate-500">New sources begin as <strong>unknown</strong>; adding a URL does not confirm its contents.</p><ModalActions onCancel={() => setModal(null)} submit="Add to shortlist" /></form></Modal>}
       {modal === 'workbook' && pendingWorkbook && <Modal title="Review workbook import" onClose={() => { setModal(null); setPendingWorkbook(null) }} wide><div className="space-y-4"><p className="text-[11px] leading-relaxed text-slate-600">The workbook is read locally in your browser. Nothing is uploaded. {pendingWorkbook.universities.length} Korean university leads and {pendingWorkbook.tasks.length} undated timeline tasks were found. University deadlines, fees, scholarships, funding notes, and URLs remain unverified until you check each official page.</p><div className="rounded-lg border border-[#e7e5de] bg-white p-3"><div className="mb-2 text-[10px] font-semibold">Preview</div><ul className="grid gap-1 text-[10px] text-slate-600 sm:grid-cols-2">{pendingWorkbook.universities.slice(0, 8).map(university => <li key={university.name}>{university.rank}. {university.name} Â· {university.category}</li>)}</ul><p className="mt-2 text-[9px] text-slate-400">Existing starter examples will be enriched; duplicate universities already in your shortlist will be skipped. No spreadsheet date is added as a confirmed deadline.</p></div>{pendingWorkbook.warnings.length > 0 && <div className="rounded-lg border border-[#ecd9b7] bg-[#fbf7ed] p-3 text-[10px] text-[#806e48]"><strong>Profile discrepancy found:</strong> {pendingWorkbook.warnings.join(' ')} Your current profile says {workspace.profile.cgpa}. A verification task will be added; no value will be overwritten.</div>}<ModalActions onCancel={() => { setModal(null); setPendingWorkbook(null) }} submit="Import unverified leads" onSubmit={confirmWorkbookImport} /></div></Modal>}
       {modal === 'profile' && <Modal title="Applicant profile" onClose={() => setModal(null)} wide><form onSubmit={saveProfile} className="grid gap-4 sm:grid-cols-2"><Field label="Name"><input className="input" value={profileForm.name} onChange={event => setProfile('name', event.target.value)} /></Field><Field label="Contact email"><input type="email" className="input" value={profileForm.contactEmail} onChange={event => setProfile('contactEmail', event.target.value)} /></Field><Field label="Portfolio URL"><input type="url" className="input" value={profileForm.portfolioUrl} onChange={event => setProfile('portfolioUrl', event.target.value)} /></Field><Field label="GitHub URL"><input type="url" className="input" value={profileForm.githubUrl} onChange={event => setProfile('githubUrl', event.target.value)} /></Field><Field label="LinkedIn URL"><input type="url" className="input" value={profileForm.linkedinUrl} onChange={event => setProfile('linkedinUrl', event.target.value)} /></Field><Field label="CV URL"><input type="url" className="input" value={profileForm.cvUrl} onChange={event => setProfile('cvUrl', event.target.value)} /></Field><Field label="University"><input className="input" value={profileForm.university} onChange={event => setProfile('university', event.target.value)} /></Field><Field label="Degree"><input className="input" value={profileForm.degree} onChange={event => setProfile('degree', event.target.value)} /></Field><Field label="CGPA"><input className="input" value={profileForm.cgpa} onChange={event => setProfile('cgpa', event.target.value)} /></Field><Field label="SSC GPA"><input className="input" value={profileForm.ssc} onChange={event => setProfile('ssc', event.target.value)} /></Field><Field label="HSC GPA"><input className="input" value={profileForm.hsc} onChange={event => setProfile('hsc', event.target.value)} /></Field><Field label="Academic status"><input className="input" value={profileForm.status} onChange={event => setProfile('status', event.target.value)} /></Field><Field label="IELTS"><input className="input" value={profileForm.ielts} onChange={event => setProfile('ielts', event.target.value)} /></Field><Field label="Target intake"><input className="input" value={profileForm.target} onChange={event => setProfile('target', event.target.value)} /></Field><Field label="Funding need"><input className="input" value={profileForm.needs} onChange={event => setProfile('needs', event.target.value)} /></Field><Field label="Timezone"><input className="input" value={profileForm.timezone} onChange={event => setProfile('timezone', event.target.value)} /></Field><Field label="Skills from portfolio"><textarea className="input min-h-20" value={profileForm.skills} onChange={event => setProfile('skills', event.target.value)} /></Field><Field label="Experience from portfolio"><textarea className="input min-h-20" value={profileForm.experience} onChange={event => setProfile('experience', event.target.value)} /></Field><div className="flex items-end justify-end gap-2 sm:col-span-2"><button type="button" onClick={() => setModal(null)} className="rounded-lg border px-4 py-2 text-xs">Cancel</button><button className="rounded-lg bg-ink px-4 py-2 text-xs font-semibold text-white">Save profile</button></div></form></Modal>}
+      {modal === 'readiness' && <Modal title="Language tests & applicant readiness" onClose={() => setModal(null)} wide><form onSubmit={saveProfile} className="grid gap-4 sm:grid-cols-2">
+        <Field label="IELTS booking/result status (self-reported)"><input className="input" value={profileForm.ielts} onChange={event => setProfile('ielts', event.target.value)} placeholder="Booked / not booked / completed / result pending" /></Field>
+        <Field label="IELTS booking date"><input type="date" className="input" value={profileForm.ieltsBookingDate} onChange={event => setProfile('ieltsBookingDate', event.target.value)} /></Field>
+        <Field label="IELTS result date"><input type="date" className="input" value={profileForm.ieltsResultDate} onChange={event => setProfile('ieltsResultDate', event.target.value)} /></Field>
+        <Field label="IELTS score (leave blank until result received)"><input className="input" value={profileForm.ieltsScore} onChange={event => setProfile('ieltsScore', event.target.value)} placeholder="No score entered" /></Field>
+        <Field label="Upfront budget available (your own amount and currency)"><input className="input" value={profileForm.upfrontBudget} onChange={event => setProfile('upfrontBudget', event.target.value)} placeholder="Unknown until you enter it" /></Field>
+        <Field label="Passport expiry date"><input type="date" className="input" value={profileForm.passportExpiry} onChange={event => setProfile('passportExpiry', event.target.value)} /></Field>
+        <p className="rounded-lg bg-[#faf9f6] p-3 text-[10px] leading-relaxed text-slate-500 sm:col-span-2">These are personal planning fields and are not independently verified. An empty IELTS score stays empty; no status or budget is inferred. Universities may have different passport-validity and English-test requirements—verify each program notice.</p>
+        <div className="flex justify-end gap-2 sm:col-span-2"><button type="button" onClick={() => setModal(null)} className="rounded-lg border px-4 py-2 text-xs">Cancel</button><button className="rounded-lg bg-ink px-4 py-2 text-xs font-semibold text-white">Save readiness details</button></div>
+      </form></Modal>}
       {modal === 'auth' && <Modal title={userId ? 'Account' : 'Secure sign in'} onClose={() => setModal(null)}><div className="mb-4 rounded-lg bg-[#f4f3ee] p-3 text-[11px] leading-relaxed text-slate-600">{supabaseConfigured ? 'Authenticate to sync your workspace to your private Supabase account.' : 'Local mode is ready. Configure Supabase to enable account sync and private file storage.'}</div>{userId ? <div><p className="mb-4 text-sm">{email}</p><button onClick={async () => { if (supabase) await supabase.auth.signOut(); setUserId(null); setModal(null); notify('Signed out.') }} className="rounded-lg border px-4 py-2 text-xs">Sign out</button></div> : <form onSubmit={signIn} className="space-y-3"><Field label="Email"><input name="email" type="email" required className="input" placeholder="you@example.com" /></Field><Field label="Password"><input name="password" type="password" required minLength={8} className="input" placeholder="At least 8 characters" /></Field><div className="flex gap-2 pt-2"><button name="action" value="in" onClick={() => setAuthAction('in')} disabled={authBusy} className="flex-1 rounded-lg bg-ink px-3 py-2.5 text-xs font-semibold text-white disabled:opacity-50">{authBusy ? <LoaderCircle className="mx-auto animate-spin" size={16} /> : 'Sign in'}</button><button name="action" value="up" onClick={() => setAuthAction('up')} disabled={authBusy} className="flex-1 rounded-lg border px-3 py-2.5 text-xs font-semibold">Create account</button></div></form>}</Modal>}
-      {drawer && <UniversityDrawer university={drawer} timezone={workspace.profile.timezone} onClose={() => setDrawer(null)} onUpdate={async (uni) => { if (await saveUniversity(uni)) { setDrawer(uni); notify('University details saved.') } }} onStage={stage => changeStage(drawer, stage)} />}
+      {drawer && <UniversityDrawer university={drawer} documents={documents} timezone={workspace.profile.timezone} onClose={() => setDrawer(null)} onUpdate={async (uni) => { if (await saveUniversity(uni)) { setDrawer(uni); notify('University details saved.') } }} onStage={stage => changeStage(drawer, stage)} />}
     </div>
   )
 }
 
-function Dashboard({ workspace, overdue, openTasks, taskChart, funnel, timezone, onOpenTasks, onOpenUniversities, onComplete, onEditProfile }: {
-  workspace: Workspace; overdue: Task[]; openTasks: Task[]; taskChart: { month: string; tasks: number }[];
-  funnel: { stage: Stage; count: number }[]; timezone: string; onOpenTasks: () => void; onOpenUniversities: () => void;
+function Dashboard({ workspace, documents, overdue, openTasks, taskChart, funnel, timezone, onOpenTasks, onOpenUniversities, onOpenScholarships, onOpenDocuments, onOpenReadiness, onComplete, onEditProfile }: {
+  workspace: Workspace; documents: DocumentRecord[]; overdue: Task[]; openTasks: Task[]; taskChart: { month: string; tasks: number }[];
+  funnel: { stage: Stage; count: number }[]; timezone: string; onOpenTasks: () => void; onOpenUniversities: () => void; onOpenScholarships: () => void;
+  onOpenDocuments: () => void; onOpenReadiness: () => void;
   onComplete: (task: Task) => void; onEditProfile: () => void
 }) {
   const done = workspace.tasks.filter(task => task.done).length
@@ -815,7 +1019,41 @@ function Dashboard({ workspace, overdue, openTasks, taskChart, funnel, timezone,
       <Metric label="Shortlisted" value={String(workspace.universities.length).padStart(2, '0')} note={workspace.universities.some(uni => uni.isExample) ? 'starter examples included' : 'your university records'} icon={GraduationCap} tint="teal" onClick={onOpenUniversities} />
       <Metric label="Applications in progress" value={String(workspace.universities.filter(uni => !['Researching', 'Rejected'].includes(uni.stage)).length).padStart(2, '0')} note="active application records" icon={Activity} tint="gold" onClick={onOpenUniversities} />
       <Metric label="Open actions" value={String(openTasks.length).padStart(2, '0')} note={overdue.length ? `${overdue.length} overdue â€” review now` : openTasks.some(task => task.isExample) ? 'planning examples; no dates set' : 'no overdue tasks'} icon={ListTodo} tint={overdue.length ? 'rose' : 'slate'} onClick={onOpenTasks} />
-      <Metric label="Korea funding evidence" value="â€”" note="2027 support not confirmed" icon={Wallet} tint="slate" onClick={onOpenUniversities} />
+      <Metric label="Verified full-funding routes" value={String(workspace.opportunities.filter(item => fundingStatus(item) === 'Verified full funding').length).padStart(2, '0')} note="Fall 2027 evidence required" icon={Wallet} tint="slate" onClick={onOpenScholarships} />
+    </section>
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><div className="font-display text-[13px] font-bold">Funding priorities</div>
+          <p className="mt-1 text-[10px] text-slate-500">Sorted by funding tier, profile fit, funding completeness, evidence, and intake verification—not university prestige.</p></div>
+        <button onClick={onOpenScholarships} className="text-[10px] font-semibold text-teal">Scholarships & filters <ChevronRight size={13} className="inline" /></button>
+      </div>
+      {workspace.opportunities.filter(item => fundingStatus(item) === 'Verified full funding' && item.ieltsRequirement === 'Not required').length === 0 &&
+        <p className="mt-3 rounded-lg border border-[#eadfca] bg-[#fbf7ed] p-3 text-[9px] leading-relaxed text-[#806e48]">No verified opportunity currently meets “full funding + IELTS not required.” The leads below are closest available research records, not confirmed scholarship or admission offers.</p>}
+      <div className="mt-3 grid gap-2 md:grid-cols-3">
+        {rankScholarshipOpportunities(workspace.opportunities).slice(0, 3).map(item => <button key={item.id} onClick={onOpenScholarships} className="rounded-lg bg-[#faf9f6] p-3 text-left hover:bg-[#f4f3ee]">
+          <div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold text-teal">{tierFor(item)}</span><span className="text-[8px] text-slate-400">{item.intakeVerification}</span></div>
+          <div className="mt-1 truncate text-[10px] font-semibold">{item.name}</div>
+          <div className="mt-0.5 truncate text-[9px] text-slate-500">{item.university}</div>
+          <div className="mt-2 text-[9px] text-slate-500">{fundingStatus(item)} · IELTS {item.ieltsRequirement.toLowerCase()}</div>
+        </button>)}
+        {!workspace.opportunities.length && <p className="text-[10px] text-slate-500">Add program or funding records to rank them against your priorities.</p>}
+      </div>
+    </section>
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><div className="font-display text-[13px] font-bold">Applicant readiness</div><p className="mt-1 text-[10px] text-slate-500">Based on information you enter; this is not an admissions eligibility decision.</p></div>
+        <div className="flex gap-2"><button onClick={onOpenReadiness} className="rounded-lg border px-3 py-2 text-[9px] font-semibold">Update profile</button><button onClick={onOpenDocuments} className="rounded-lg border px-3 py-2 text-[9px] font-semibold">Review documents</button></div>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <ReadinessItem label="Academic profile" value={`${workspace.profile.cgpa || 'CGPA not entered'} · ${workspace.profile.status || 'status not entered'}`} complete={Boolean(workspace.profile.cgpa && workspace.profile.university && workspace.profile.degree)} />
+        <ReadinessItem label="IELTS booking" value={workspace.profile.ieltsBookingDate || workspace.profile.ielts || 'Not entered'} complete={Boolean(workspace.profile.ieltsBookingDate || workspace.profile.ielts)} />
+        <ReadinessItem label="IELTS result" value={workspace.profile.ieltsScore ? `Score entered: ${workspace.profile.ieltsScore}` : 'No score entered'} complete={Boolean(workspace.profile.ieltsScore)} />
+        <ReadinessItem label="Passport expiry" value={workspace.profile.passportExpiry || 'Not entered'} complete={Boolean(workspace.profile.passportExpiry)} />
+        <ReadinessItem label="Upfront budget" value={workspace.profile.upfrontBudget ? `${workspace.profile.upfrontBudget} (user-entered)` : 'Unknown · enter your own amount'} complete={Boolean(workspace.profile.upfrontBudget)} />
+        <ReadinessItem label="Passport document" value={documents.find(item => item.name.toLowerCase().includes('passport'))?.status ?? 'Not in checklist'} complete={documents.some(item => item.name.toLowerCase().includes('passport') && item.status === 'Available')} />
+        <ReadinessItem label="Transcript" value={documents.find(item => item.name.toLowerCase().includes('transcript'))?.status ?? 'Not in checklist'} complete={documents.some(item => item.name.toLowerCase().includes('transcript') && item.status === 'Available')} />
+        <ReadinessItem label="MOI letter" value={documents.find(item => item.name.toLowerCase().includes('medium of instruction'))?.status ?? 'Not in checklist'} complete={documents.some(item => item.name.toLowerCase().includes('medium of instruction') && item.status === 'Available')} />
+      </div>
     </section>
     <section className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
       <div className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
@@ -864,7 +1102,21 @@ function UniversityPage({ universities, filter, setFilter, countryFilter, setCou
 }
 
 function ApplicationsPage({ universities, onStage, onOpen }: { universities: University[]; onStage: (uni: University, stage: Stage) => void; onOpen: (uni: University) => void }) {
-  return <div className="space-y-4"><div className="surface rounded-xl border border-[#eadfca] bg-[#fbf7ed] p-4 text-[10px] leading-relaxed text-[#806e48]">University stages are starter examples, not actual application records. Dates, decisions, notes, and supporting evidence are not yet tracked in this MVP.</div><div className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[13px] font-bold">Application pipeline</div><p className="mt-1 text-[10px] text-slate-500">Update the current stage for each university. Replace sample stages with verified application activity.</p></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{stageOptions.map(stage => { const items = universities.filter(uni => uni.stage === stage); return <section key={stage} className="surface min-h-[145px] rounded-xl border border-[#e7e5de] bg-white p-3"><div className="mb-3 flex items-center justify-between"><span className="text-[11px] font-semibold">{stage}</span><span className="rounded-full bg-[#f1f0eb] px-2 py-0.5 text-[9px] text-slate-500">{items.length}</span></div>{items.length ? items.map(uni => <button key={uni.id} onClick={() => onOpen(uni)} className="mb-2 block w-full rounded-lg border border-[#eeede8] p-3 text-left hover:border-teal/40"><div className="text-[11px] font-semibold">{uni.name}{uni.isExample && <span className="ml-2 rounded-full bg-[#f6f1e4] px-1.5 py-0.5 text-[8px] font-normal text-[#8f7543]">example</span>}</div><div className="mt-1 flex items-center justify-between text-[9px] text-slate-500"><span>{uni.city} Â· {uni.category}</span><select aria-label={`Update stage for ${uni.name}`} onClick={event => event.stopPropagation()} onChange={event => onStage(uni, event.target.value as Stage)} value={uni.stage} className="max-w-[115px] rounded border px-1 py-1 text-[9px]">{stageOptions.map(item => <option key={item}>{item}</option>)}</select></div></button>) : <p className="py-4 text-center text-[10px] text-slate-400">No applications in this stage.</p>}</section> })}</div></div>
+  return <div className="space-y-4">
+    <div className="surface rounded-xl border border-[#eadfca] bg-[#fbf7ed] p-4 text-[10px] leading-relaxed text-[#806e48]">Starter stages are examples, not actual application outcomes. Use each program’s detail panel to record verified requirements, official deadlines, recommendation letters, submission dates, decisions, and next actions.</div>
+    <div className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[13px] font-bold">Master’s application pipeline</div><p className="mt-1 text-[10px] text-slate-500">Open a program card to manage its requirements, document links, recommender progress, submission details, and decision.</p></div>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{stageOptions.map(stage => {
+      const items = universities.filter(uni => uni.stage === stage)
+      return <section key={stage} className="surface min-h-[145px] rounded-xl border border-[#e7e5de] bg-white p-3">
+        <div className="mb-3 flex items-center justify-between"><span className="text-[11px] font-semibold">{stage}</span><span className="rounded-full bg-[#f1f0eb] px-2 py-0.5 text-[9px] text-slate-500">{items.length}</span></div>
+        {items.length ? items.map(uni => <button key={uni.id} onClick={() => onOpen(uni)} className="mb-2 block w-full rounded-lg border border-[#eeede8] p-3 text-left hover:border-teal/40">
+          <div className="text-[11px] font-semibold">{uni.name}{uni.isExample && <span className="ml-2 rounded-full bg-[#f6f1e4] px-1.5 py-0.5 text-[8px] font-normal text-[#8f7543]">example</span>}</div>
+          <div className="mt-1 flex items-center justify-between text-[9px] text-slate-500"><span>{uni.city} · {uni.category}</span><select aria-label={`Update stage for ${uni.name}`} onClick={event => event.stopPropagation()} onChange={event => onStage(uni, event.target.value as Stage)} value={uni.stage} className="max-w-[115px] rounded border px-1 py-1 text-[9px]">{stageOptions.map(item => <option key={item}>{item}</option>)}</select></div>
+          <div className="mt-2 text-[9px] text-slate-500">Requirements: {uni.requirements?.length ?? 0} · Recommendations: {uni.recommendations?.length ?? 0} · {uni.submittedAt ? `Submitted ${dateLabel(uni.submittedAt)}` : 'Not submitted'}</div>
+        </button>) : <p className="py-4 text-center text-[10px] text-slate-400">No applications in this stage.</p>}
+      </section>
+    })}</div>
+  </div>
 }
 
 function TasksPage({ tasks, timezone, onAdd, onComplete }: { tasks: Task[]; timezone: string; onAdd: () => void; onComplete: (task: Task) => void }) {
@@ -873,7 +1125,7 @@ function TasksPage({ tasks, timezone, onAdd, onComplete }: { tasks: Task[]; time
   return <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]"><section className="surface overflow-hidden rounded-xl border border-[#e7e5de] bg-white"><div className="flex items-center justify-between border-b border-[#eeede8] p-4"><div><div className="font-display text-[13px] font-bold">Task manager</div><div className="mt-1 text-[10px] text-slate-500">{completed} of {tasks.length} complete Â· overdue tasks highlighted</div></div><button onClick={onAdd} className="rounded-lg bg-ink px-3 py-2 text-[10px] font-semibold text-white"><Plus size={13} className="mr-1 inline" />Add task</button></div><div className="divide-y divide-[#f0efe9]">{sorted.map(task => <TaskRow key={task.id} task={task} timezone={timezone} onToggle={() => onComplete(task)} />)}{!tasks.length && <div className="p-8 text-center text-xs text-slate-500">No tasks yet. Add one to start planning.</div>}</div></section><section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[13px] font-bold">Calendar Â· {timezone}</div><p className="mt-1 text-[10px] text-slate-500">Only user-entered task dates and confirmed application deadlines appear here.</p><div className="mt-4 space-y-2">{sorted.filter(task => task.dueDate).map(task => <div key={task.id} className="flex gap-3 rounded-lg bg-[#faf9f6] p-3"><div className="grid h-9 min-w-9 place-items-center rounded-lg bg-[#e7f0eb] text-center"><span className="text-[12px] font-bold text-teal">{new Date(`${task.dueDate}T12:00:00Z`).getUTCDate()}</span></div><div className="min-w-0"><div className="truncate text-[10px] font-semibold">{task.title}</div><div className="mt-1 text-[9px] text-slate-500">{dateLabel(task.dueDate)} Â· {task.priority}{!task.done && task.dueDate < today(timezone) && <span className="ml-2 text-rose-600">Overdue</span>}</div></div></div>)}{!sorted.some(task => task.dueDate) && <div className="py-8 text-center text-xs text-slate-400">No dated tasks. Add a due date to see it in the calendar.</div>}</div></section></div>
 }
 
-function BudgetPage({ budget, setBudget }: { budget: Budget; setBudget: (value: Budget) => void }) {
+function BudgetPage({ budget, setBudget, onOpenScholarships }: { budget: Budget; setBudget: (value: Budget) => void; onOpenScholarships: () => void }) {
   const fields: [Exclude<keyof Budget, 'currency'>, string][] = [
     ['monthlyLiving', `Monthly living costs (${budget.currency})`], ['annualTuition', `Tuition per year (${budget.currency})`],
     ['travel', `Annual travel (${budget.currency})`], ['fees', `Annual application / mandatory fees (${budget.currency})`],
@@ -885,20 +1137,12 @@ function BudgetPage({ budget, setBudget }: { budget: Budget; setBudget: (value: 
   const gap = Math.max(cost - guaranteed, 0)
   return <div className="space-y-4">
     <div className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[13px] font-bold">Funding & budget planner</div><p className="mt-1 text-[10px] text-slate-500">All amounts are your editable planning inputs, not official cost estimates. Unknowns are excluded until you enter evidence-backed figures.</p></div>
-    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[12px] font-bold">Scholarship tracker Â· graduate Fall 2027</div><p className="mt-1 text-[10px] text-slate-500">The applicable annual graduate rules, eligibility, quota, deadlines, and support are not yet confirmed. No prior-year rules are carried forward.</p><div className="mt-3 grid gap-3 md:grid-cols-3">
-      <ScholarshipCard title="GKS Â· Embassy Track" source="Korean Embassy in Bangladesh" url="https://overseas.mofa.go.kr/bd-en/index.do" status="unknown" lastChecked="20 Oct 2026 Â· page unreachable during check" note="No 2027 graduate notice, rules, or deadline verified." />
-      <ScholarshipCard title="GKS Â· University Track" source="Study in Korea official portal" url="https://www.studyinkorea.go.kr/ko/main.do" status="unknown" lastChecked="20 Oct 2026 Â· portal homepage checked" note="Specific 2027 graduate notice and University Track rules not located or confirmed." />
-      <ScholarshipCard title="SNU international scholarships" source="SNU scholarships page" url="https://en.snu.ac.kr/academics/resources/scholarships" status="historical" lastChecked="20 Oct 2026" note="Official page says last updated in 2023; not applicable as Fall 2027 funding evidence." />
-    </div></section>
+    <section className="surface flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e7e5de] bg-white p-5"><div><div className="font-display text-[12px] font-bold">Scholarship and program funding</div><p className="mt-1 text-[10px] text-slate-500">Review claim-level official evidence, language rules, intake status, and funding completeness in the opportunity tracker.</p></div><button onClick={onOpenScholarships} className="rounded-lg bg-ink px-3 py-2 text-[10px] font-semibold text-white">Open funding tracker</button></section>
     <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
       <div className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><div className="text-[11px] font-semibold">Annual planning assumptions Â· {budget.currency}</div><label className="text-[10px] text-slate-500">Scenario currency<select aria-label="Scenario currency" className="input ml-2 w-28" value={budget.currency} onChange={event => setBudget({ ...budget, currency: event.target.value as Currency })}>{(['KRW', 'EUR', 'BDT'] as Currency[]).map(currency => <option key={currency}>{currency}</option>)}</select></label></div><div className="grid gap-3 sm:grid-cols-2">{fields.map(([key, label]) => <Field key={key} label={label}><input inputMode="numeric" type="number" min="0" value={budget[key]} onChange={event => setBudget({ ...budget, [key]: event.target.value })} placeholder="Unknown" className="input" /></Field>)}</div><div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Competitive or conditional scholarships do not count toward guaranteed funding. Add only written, applicable support in the guaranteed monthly field. Use one currency per scenario; the app does not convert amounts.</div></div>
       <div className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="text-[11px] font-semibold">Out-of-pocket scenario Â· {budget.currency}</div>{cost > 0 ? <><div className="mt-4 grid grid-cols-2 gap-3"><Amount label="Annual costs entered" value={cost} symbol={currencySymbols[budget.currency]} /><Amount label="Guaranteed support entered" value={guaranteed} symbol={currencySymbols[budget.currency]} /><Amount label="Estimated remaining gap" value={gap} symbol={currencySymbols[budget.currency]} emphasis /><Amount label="Support coverage" value={cost ? Math.min(100, Math.round(guaranteed / cost * 100)) : 0} suffix="%" /></div><div className="mt-5 h-3 overflow-hidden rounded-full bg-[#eeede8]"><div className="h-full rounded-full bg-teal transition-all" style={{ width: `${Math.min(100, cost ? guaranteed / cost * 100 : 0)}%` }} /></div><div className="mt-2 flex justify-between text-[9px] text-slate-500"><span>Guaranteed support</span><span>Entered cost scenario</span></div></> : <EmptyState icon={Wallet} title="Costs are unknown" text="Enter costs from official sources or your own budget to see an estimate. No costs have been invented." />}<p className="mt-4 text-[9px] text-slate-400">Simple 12-month model; does not account for one-time funding, start dates, renewal, tax, or currency conversion. Verify terms before relying on it.</p></div>
     </div>
   </div>
-}
-
-function ScholarshipCard({ title, source, url, status, lastChecked, note }: { title: string; source: string; url: string; status: Verification; lastChecked: string; note: string }) {
-  return <div className="rounded-lg border border-[#ebe9e2] bg-[#faf9f6] p-3"><div className="flex items-center justify-between gap-2"><div className="text-[10px] font-semibold">{title}</div><StatusPill status={status} /></div><div className="mt-1 text-[9px] text-slate-500">Eligibility / deadline / coverage / stipend: <strong>Unknown</strong></div><div className="mt-1 text-[9px] text-slate-500">Annual graduate rules for Fall 2027: <strong>Not confirmed</strong></div><p className="mt-2 text-[9px] leading-relaxed text-slate-500">{note}</p><div className="mt-2 text-[9px] text-slate-400">Last checked: {lastChecked}</div><a target="_blank" rel="noreferrer" href={url} className="mt-1 block break-all text-[9px] text-teal hover:underline">{source} <ExternalLink size={10} className="inline" /></a></div>
 }
 
 function DocumentsPage({ docs, setDocs, name, setName, type, setType, onAdd, authenticated, userId, cloudReady, setToast }: {
@@ -1086,16 +1330,36 @@ function ProfessorPage({ storageKey, userId }: { storageKey: string; userId: str
     {entries.length ? <div className="grid gap-3 md:grid-cols-2">{entries.map(entry => <div key={entry.id} className="surface rounded-xl border border-[#e7e5de] bg-white p-4"><div className="flex items-start justify-between gap-2"><div><div className="font-semibold text-[12px]">{entry.professor}</div><div className="mt-1 text-[10px] text-slate-500">{entry.lab || 'Lab not specified'}</div>{entry.email && <a className="mt-1 block text-[10px] text-teal" href={`mailto:${entry.email}`}>{entry.email}</a>}</div><div className="flex gap-1"><button aria-label={`Edit ${entry.professor}`} onClick={() => editEntry(entry)} className="rounded border px-2 py-1 text-[9px]">Edit</button><button aria-label={`Remove ${entry.professor}`} onClick={() => deleteEntry(entry)} className="rounded border px-2 py-1 text-[9px] text-rose-700">Remove</button></div></div><div className="mt-3 grid grid-cols-2 gap-2 text-[10px]"><div>Contacted: {entry.contacted || 'Not recorded'}</div><div>Follow-up: {entry.followUp || 'Not set'}</div></div>{[['Research fit', entry.fit], ['Papers read', entry.papers], ['Reply', entry.notes], ['Funding', entry.funding], ['Next action', entry.nextAction]].filter(([, value]) => value).map(([label, value]) => <div key={label} className="mt-2 text-[10px] text-slate-600"><strong>{label}:</strong> {value}</div>)}</div>)}</div> : <div className="surface rounded-xl border border-dashed border-[#dcdad2] bg-white py-14"><EmptyState icon={Mail} title="No professor contacts yet" text="Add a lab contact to track your outreach and next step. No messages are sent automatically." /></div>}</div>
 }
 
-function SourcesPage({ universities, failures, changes, timezone, onRefresh, onReviewChange, onExport }: {
-  universities: University[]; failures: RefreshFailure[]; changes: SourceChange[]; timezone: string;
+function SourcesPage({ universities, opportunities, failures, changes, timezone, onRefresh, onReviewChange, onExport }: {
+  universities: University[]; opportunities: ScholarshipOpportunity[]; failures: RefreshFailure[]; changes: SourceChange[]; timezone: string;
   onRefresh: () => void; onReviewChange: (change: SourceChange, status: 'reviewed' | 'dismissed') => void; onExport: () => void
 }) {
-  const all = universities.flatMap(uni => uni.evidence.map((item, index) => ({ ...item, university: uni.name, id: `${uni.id}-${index}` })))
+  const all = [
+    ...universities.flatMap(uni => [
+      ...uni.evidence.map((item, index) => ({ ...item, url: safeHttpsUrl(item.url) ?? '', university: uni.name, id: `${uni.id}-${index}`, quote: '', fieldKey: '' })),
+      ...(uni.requirements ?? []).flatMap(requirement => (requirement.evidence ?? []).map((item, index) => ({
+        ...item,
+        url: safeHttpsUrl(item.url) ?? '', type: `Program requirement · ${requirement.name}`, intake: item.intake, status: item.status,
+        note: item.quote, quote: item.quote, fieldKey: item.fieldKey, checkedAt: item.checkedAt,
+        needsReview: false, university: uni.name, id: `${uni.id}-${requirement.id}-${index}`,
+      }))),
+    ]),
+    ...opportunities.flatMap(opportunity => [
+      ...opportunity.claimEvidence, ...opportunity.languageEvidence, ...(opportunity.applicationEvidence ?? []),
+    ].map((item, index) => ({
+      ...item,
+      url: safeHttpsUrl(item.url) ?? '',
+      type: `Scholarship claim · ${item.fieldKey}`, intake: item.intake, status: item.status,
+      note: item.quote, quote: item.quote, fieldKey: item.fieldKey, checkedAt: item.checkedAt,
+      needsReview: false, university: opportunity.university || opportunity.name, id: `${opportunity.id}-claim-${index}`,
+    }))),
+  ]
   const stale = all.filter(item => isEvidenceStale(item.checkedAt)).length
   const pendingChanges = changes.filter(change => change.reviewStatus === 'pending')
+    .map(change => ({ ...change, url: safeHttpsUrl(change.url) ?? '' }))
   const pastChanges = changes.filter(change => change.reviewStatus !== 'pending')
   return <div className="space-y-4">
-    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-display text-[13px] font-bold">Official-source monitoring</div><p className="mt-1 text-[10px] text-slate-500">Fetch success is a freshness signal, never proof that a fact is true or applies to Fall 2027. Checks older than 30 days are marked stale.</p></div><div className="flex gap-2"><button onClick={() => window.print()} className="rounded-lg border px-3 py-2 text-[10px]">Print report</button><button onClick={onExport} className="rounded-lg border px-3 py-2 text-[10px]"><Download size={13} className="mr-1 inline" />CSV export</button><button onClick={onRefresh} className="rounded-lg bg-ink px-3 py-2 text-[10px] font-semibold text-white"><RefreshCw size={13} className="mr-1 inline" />Refresh sources</button></div></div></section>
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-display text-[13px] font-bold">Official-source monitoring</div><p className="mt-1 text-[10px] text-slate-500">Fetch success is a freshness signal, never proof that a fact is true or applies to Fall 2027. Checks older than 30 days are marked stale. Claim-level scholarship and program evidence is shown here but not auto-refreshed.</p></div><div className="flex gap-2"><button onClick={() => window.print()} className="rounded-lg border px-3 py-2 text-[10px]">Print report</button><button onClick={onExport} className="rounded-lg border px-3 py-2 text-[10px]"><Download size={13} className="mr-1 inline" />CSV export</button><button onClick={onRefresh} className="rounded-lg bg-ink px-3 py-2 text-[10px] font-semibold text-white"><RefreshCw size={13} className="mr-1 inline" />Refresh monitored pages</button></div></div></section>
     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4"><Metric label="Tracked official URLs" value={String(all.length).padStart(2, '0')} note="linked to shortlist records" icon={ExternalLink} tint="teal" /><Metric label="Confirmed for Fall 2027" value={String(all.filter(item => item.status === 'confirmed' && item.intake === 'Fall 2027').length).padStart(2, '0')} note="evidence reviewed by you" icon={ShieldCheck} tint="slate" /><Metric label="Needs human review" value={String(all.filter(item => item.status !== 'confirmed' || item.needsReview).length).padStart(2, '0')} note="unconfirmed or changed" icon={CircleHelp} tint="gold" /><Metric label="Stale checks" value={String(stale).padStart(2, '0')} note="never checked or older than 30 days" icon={Clock3} tint="rose" /></div>
     {failures.length > 0 && <section className="surface rounded-xl border border-[#f0d9d2] bg-[#fff8f5] p-4"><div className="text-[11px] font-semibold text-[#9b5945]">Recent refresh failures</div>{failures.map(failure => <div key={failure.id} className="mt-2 flex flex-wrap justify-between gap-2 text-[10px] text-slate-600"><span>{failure.error_message ?? 'Source request failed'}</span><span>{timestampLabel(failure.checked_at, timezone)}</span></div>)}</section>}
     <section className="surface rounded-xl border border-[#e7e5de] bg-white p-4">
@@ -1108,12 +1372,56 @@ function SourcesPage({ universities, failures, changes, timezone, onRefresh, onR
   </div>
 }
 
-function SettingsPage({ profile, onEdit, userId }: { profile: Profile; onEdit: () => void; userId: string | null }) {
-  return <div className="grid gap-4 xl:grid-cols-2"><section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="flex items-start justify-between"><div><div className="font-display text-[13px] font-bold">Applicant profile</div><p className="mt-1 text-[10px] text-slate-500">Edit your personal and application assumptions.</p></div><button onClick={onEdit} className="rounded-lg border px-3 py-2 text-[10px] font-semibold">Edit profile</button></div><dl className="mt-4 grid grid-cols-2 gap-3">{Object.entries(profile).map(([key, value]) => <div key={key} className="rounded-lg bg-[#faf9f6] p-3"><dt className="text-[9px] capitalize text-slate-500">{key.replace(/[A-Z]/g, match => ` ${match}`)}</dt><dd className="mt-1 break-words text-[10px] font-semibold">{['portfolioUrl', 'githubUrl', 'linkedinUrl', 'cvUrl'].includes(key) && value ? <a href={value} target="_blank" rel="noreferrer" className="text-teal underline-offset-2 hover:underline">{value}</a> : key === 'contactEmail' && value ? <a href={`mailto:${value}`} className="text-teal underline-offset-2 hover:underline">{value}</a> : value || 'â€”'}</dd></div>)}</dl></section><section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[13px] font-bold">Workspace & refresh settings</div><div className="mt-4 space-y-3"><SettingRow title="Workspace storage" value={userId ? 'Supabase account sync enabled' : 'Local browser storage'} /><SettingRow title="Timezone" value={profile.timezone} /><SettingRow title="Source refresh" value="Manual refresh (no scheduler configured)" /><SettingRow title="Funding completeness formula" value="5 evidence checks Â· 20% each" /><SettingRow title="Currency assumption" value="Budget scenario selects KRW, EUR, or BDT; no conversion" /><SettingRow title="Notification preferences" value="In-app Â· derived from saved data" /></div><div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Scheduled refresh is not configured. Manual source checks require sign-in. Private uploads are not implemented. This UI never fabricates refresh outcomes or sends outreach.</div></section><section className="surface rounded-xl border border-[#e7e5de] bg-white p-5"><div className="font-display text-[13px] font-bold">GKS graduate scholarship</div><p className="mt-2 text-[10px] leading-relaxed text-slate-500">Embassy and University routes should be configured only from the official annual graduate notice. Graduate eligibility, quotas, deadlines, and benefits are unknown until that notice is published and reviewed.</p><div className="mt-3 flex gap-2"><StatusPill status="unknown" /><span className="text-[10px] text-slate-500">Applicable 2027 rules: not confirmed</span></div></section></div>
+function SettingsPage({ profile, onEdit, onEditReadiness, userId, cloudReady, remindersEnabled, onReminderChange, onExport, onImport, onDeleteAccount }: {
+  profile: Profile; onEdit: () => void; onEditReadiness: () => void; userId: string | null; cloudReady: boolean; remindersEnabled: boolean
+  onReminderChange: (enabled: boolean) => void; onExport: () => void
+  onImport: (event: React.ChangeEvent<HTMLInputElement>) => void; onDeleteAccount: () => void
+}) {
+  return <div className="grid gap-4 xl:grid-cols-2">
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
+      <div className="flex items-start justify-between"><div><div className="font-display text-[13px] font-bold">Applicant profile</div><p className="mt-1 text-[10px] text-slate-500">Edit your personal and application assumptions.</p></div><div className="flex gap-2"><button onClick={onEdit} className="rounded-lg border px-3 py-2 text-[10px] font-semibold">Edit profile</button><button onClick={onEditReadiness} className="rounded-lg border px-3 py-2 text-[10px] font-semibold">Test & readiness</button></div></div>
+      <dl className="mt-4 grid grid-cols-2 gap-3">{Object.entries(profile).map(([key, value]) => {
+        const webUrl = ['portfolioUrl', 'githubUrl', 'linkedinUrl', 'cvUrl'].includes(key) ? safeHttpsUrl(value) : null
+        const emailUrl = key === 'contactEmail' ? safeMailto(value) : null
+        return <div key={key} className="rounded-lg bg-[#faf9f6] p-3"><dt className="text-[9px] capitalize text-slate-500">{key.replace(/[A-Z]/g, match => ` ${match}`)}</dt><dd className="mt-1 break-words text-[10px] font-semibold">
+          {webUrl ? <a href={webUrl} target="_blank" rel="noreferrer" className="text-teal underline-offset-2 hover:underline">{value}</a>
+            : emailUrl ? <a href={emailUrl} className="text-teal underline-offset-2 hover:underline">{value}</a> : value || '—'}
+        </dd></div>
+      })}</dl>
+    </section>
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
+      <div className="font-display text-[13px] font-bold">Workspace & refresh settings</div>
+      <div className="mt-4 space-y-3">
+        <SettingRow title="Workspace storage" value={userId ? cloudReady ? 'Signed-in · cloud data loaded' : 'Signed-in · cloud setup/migration needs attention' : 'Guest · browser-local, not encrypted'} />
+        <SettingRow title="Timezone" value={profile.timezone} />
+        <SettingRow title="Source refresh" value="Manual only; fetch does not verify a claim" />
+        <SettingRow title="Currency assumption" value="One budget scenario currency; no conversion" />
+        <label className="flex items-center justify-between gap-3 text-[10px] text-slate-500"><span>Browser reminders (app must remain open)</span><input type="checkbox" checked={remindersEnabled} onChange={event => onReminderChange(event.target.checked)} /></label>
+      </div>
+      <div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Private documents stay in private storage for signed-in users. JSON backups include document metadata, not uploaded file bytes. Browser reminders are best-effort and are not a substitute for an independent calendar reminder.</div>
+    </section>
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
+      <div className="font-display text-[13px] font-bold">Export, restore & account controls</div>
+      <p className="mt-2 text-[10px] leading-relaxed text-slate-500">Export before restoring or deleting. Signed-in export includes cloud rows visible to your account and local checklist state; it does not include private file contents. Guest restore replaces the current guest workspace. Cloud restore must be performed manually after review.</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button onClick={onExport} className="rounded-lg bg-ink px-3 py-2 text-[10px] font-semibold text-white">Download JSON backup</button>
+        {!userId && <label className="cursor-pointer rounded-lg border px-3 py-2 text-[10px] font-semibold">Restore guest backup<input type="file" accept="application/json,.json" onChange={onImport} className="sr-only" /></label>}
+        {userId && <button onClick={onDeleteAccount} className="rounded-lg border border-[#e4c7bc] px-3 py-2 text-[10px] font-semibold text-[#9b5945]">Permanently delete account</button>}
+      </div>
+      {!userId && <p className="mt-3 text-[9px] text-slate-400">Guest records live only in this browser unless you download a backup. Clearing browser storage can permanently remove them.</p>}
+    </section>
+    <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
+      <div className="font-display text-[13px] font-bold">GKS graduate scholarship · Fall 2027</div>
+      <p className="mt-2 text-[10px] leading-relaxed text-slate-500">Embassy and University tracks are separate. The 2027 graduate notice, eligibility, language requirements, quotas, deadlines, and benefits must be confirmed from the official annual notice. No previous-year rules are carried forward as current terms.</p>
+      <div className="mt-3 flex gap-2"><StatusPill status="unknown" /><span className="text-[10px] text-slate-500">2027 terms not confirmed by currently recorded evidence</span></div>
+    </section>
+  </div>
 }
 
-function UniversityDrawer({ university, timezone, onClose, onUpdate, onStage }: { university: University; timezone: string; onClose: () => void; onUpdate: (uni: University) => void; onStage: (stage: Stage) => void }) {
+function UniversityDrawer({ university, documents, timezone, onClose, onUpdate, onStage }: { university: University; documents: DocumentRecord[]; timezone: string; onClose: () => void; onUpdate: (uni: University) => void; onStage: (stage: Stage) => void }) {
   const [form, setForm] = useState(university)
+  const verifiedRequirementCount = (form.requirements ?? []).filter(requirement =>
+    hasCurrentRequirementEvidence(requirement, form.intake)).length
   const changeEvidenceStatus = (index: number, status: Verification) => {
     setForm(current => ({ ...current, evidence: current.evidence.map((item, itemIndex) => itemIndex === index ? { ...item, status } : item) }))
   }
@@ -1127,17 +1435,101 @@ function UniversityDrawer({ university, timezone, onClose, onUpdate, onStage }: 
         <DetailStat label="Priority rank"><input type="number" min="1" value={form.rank} onChange={event => setForm({ ...form, rank: Number(event.target.value) })} className="mt-1 w-full rounded border bg-white px-2 py-1.5 text-[10px]" /></DetailStat>
       </div>
       <div className="mt-5"><h3 className="mb-2 text-[11px] font-semibold">Cost & funding Â· source-backed only</h3><div className="grid grid-cols-2 gap-2"><DetailStat label="Tuition / year">{form.tuition ? `â‚©${form.tuition.toLocaleString()}` : 'Unknown'}</DetailStat><DetailStat label="Monthly stipend">{form.stipend ? `â‚©${form.stipend.toLocaleString()}` : 'Unknown'}</DetailStat><DetailStat label="Coverage">{form.coverage}</DetailStat><DetailStat label="Deadline">{form.deadline ? dateLabel(form.deadline) : 'Not confirmed'}</DetailStat></div><p className="mt-2 text-[9px] text-slate-500">No confirmed intake-specific tuition, mandatory fee, funding duration, renewal rule, insurance, or housing data.</p></div>
+      <ProgramReadinessEditor university={form} documents={documents} onChange={setForm} />
       <div className="mt-5"><h3 className="mb-2 text-[11px] font-semibold">Official-source evidence</h3>{form.evidence.length ? form.evidence.map((evidence, index) => <EvidenceCard key={index} evidence={evidence} timezone={timezone} onStatusChange={status => changeEvidenceStatus(index, status)} onAcknowledge={() => setForm(current => ({ ...current, evidence: current.evidence.map((item, itemIndex) => itemIndex === index ? { ...item, needsReview: false } : item) }))} />) : <p className="rounded-lg bg-white p-3 text-[10px] text-slate-500">No official source attached yet.</p>}</div>
-      <div className="mt-5 grid grid-cols-2 gap-2"><DetailStat label="Degree / department">Not confirmed</DetailStat><DetailStat label="Language / recommendations">Not confirmed</DetailStat><DetailStat label="Supervisor consent">Not confirmed</DetailStat><DetailStat label="Funding completeness">0% Â· no reviewed evidence</DetailStat></div>
+      <div className="mt-5 grid grid-cols-2 gap-2">
+        <DetailStat label="Program requirements verified">{verifiedRequirementCount} / {(form.requirements ?? []).length}</DetailStat>
+        <DetailStat label="Supervisor agreement">{form.supervisorConsent ?? 'Unverified'}</DetailStat>
+        <DetailStat label="Recommendations submitted">{(form.recommendations ?? []).filter(item => item.status === 'Submitted').length} / {(form.recommendations ?? []).length}</DetailStat>
+        <DetailStat label="Application decision">{form.decision || 'Not received'}</DetailStat>
+      </div>
       <button onClick={() => onUpdate(form)} className="mt-6 w-full rounded-lg bg-ink py-2.5 text-xs font-semibold text-white">Save research details</button>
     </aside>
   </div>
 }
 
+function ProgramReadinessEditor({ university, documents, onChange }: {
+  university: University; documents: DocumentRecord[]; onChange: (university: University) => void
+}) {
+  const requirements = (university.requirements ?? []).map(requirement => ({ ...requirement, evidence: requirement.evidence ?? [] }))
+  const recommendations = university.recommendations ?? []
+  const patch = (values: Partial<University>) => onChange({ ...university, ...values })
+  const updateRequirement = (id: string, values: Partial<ProgramRequirement>) =>
+    patch({ requirements: requirements.map(item => item.id === id ? { ...item, ...values } : item) })
+  const updateRequirementEvidence = (requirement: ProgramRequirement, id: string, values: Partial<ClaimEvidence>) =>
+    updateRequirement(requirement.id, { evidence: requirement.evidence.map(item => item.id === id ? { ...item, ...values } : item) })
+  const updateRecommendation = (id: string, values: Partial<RecommendationLetter>) =>
+    patch({ recommendations: recommendations.map(item => item.id === id ? { ...item, ...values } : item) })
+  const defaultRequirements = ['Application form', 'Degree certificate / proof of expected graduation', 'Official transcript and grading scale',
+    'Statement of purpose / study plan', 'CV / resume', 'Recommendation letters', 'English-language evidence', 'Passport / identity document']
+  return <section className="mt-5 space-y-4 rounded-xl border border-[#e7e5de] bg-white p-4">
+    <div><h3 className="text-[11px] font-semibold">Master’s program and application requirements</h3>
+      <p className="mt-1 text-[9px] leading-relaxed text-slate-500">Checklist items are planning prompts, not university rules. Set status and deadlines only after checking the official program notice.</p></div>
+    <Field label="Official application portal"><input type="url" value={university.applicationPortal ?? ''} onChange={event => patch({ applicationPortal: event.target.value })} placeholder="https://..." className="input" /></Field>
+    <label className="block text-[9px] font-medium text-slate-600">Supervisor agreement required
+      <select className="input mt-1" value={university.supervisorConsent ?? 'Unverified'} onChange={event => patch({ supervisorConsent: event.target.value as AcceptanceStatus })}>
+        {['Yes', 'No', 'Conditional', 'Unverified'].map(value => <option key={value}>{value}</option>)}
+      </select>
+    </label>
+    <div className="grid grid-cols-2 gap-2">
+      <Field label="Application submitted"><input type="date" value={university.submittedAt ?? ''} onChange={event => patch({ submittedAt: event.target.value })} className="input" /></Field>
+      <Field label="Decision date"><input type="date" value={university.decisionAt ?? ''} onChange={event => patch({ decisionAt: event.target.value })} className="input" /></Field>
+      <Field label="Decision / application outcome"><input value={university.decision ?? ''} onChange={event => patch({ decision: event.target.value })} placeholder="Not received" className="input" /></Field>
+      <Field label="Next action"><input value={university.nextAction ?? ''} onChange={event => patch({ nextAction: event.target.value })} className="input" /></Field>
+      <Field label="Application notes"><textarea value={university.applicationNotes ?? ''} onChange={event => patch({ applicationNotes: event.target.value })} rows={2} className="input" /></Field>
+    </div>
+    <div>
+      <div className="flex items-center justify-between gap-2"><h4 className="text-[10px] font-semibold">Requirements & official deadlines</h4>
+        <div className="flex gap-2">        <button type="button" onClick={() => patch({ requirements: [...requirements, { id: newId(), name: '', status: 'Unknown', progress: 'Not started', deadline: '', notes: '', evidence: [] }] })} className="rounded border px-2 py-1 text-[9px]">Add custom</button>
+        <button type="button" onClick={() => patch({ requirements: [...requirements, ...defaultRequirements.filter(name => !requirements.some(item => item.name === name)).map(name => ({ id: newId(), name, status: 'Unknown' as const, progress: 'Not started' as const, deadline: '', notes: '', evidence: [] }))] })} className="rounded border px-2 py-1 text-[9px]">Add checklist prompts</button></div>
+      </div>
+      <div className="mt-2 space-y-2">{requirements.map(requirement => <div key={requirement.id} className="rounded-lg bg-[#faf9f6] p-2">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Field label="Requirement"><input value={requirement.name} onChange={event => updateRequirement(requirement.id, { name: event.target.value })} className="input" /></Field>
+          <label className="block text-[9px] font-medium text-slate-600">Status<select className="input mt-1" value={requirement.status} onChange={event => updateRequirement(requirement.id, { status: event.target.value as ProgramRequirement['status'] })}>{['Required', 'Optional', 'Not required', 'Unknown'].map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="block text-[9px] font-medium text-slate-600">Preparation status<select className="input mt-1" value={requirement.progress ?? 'Not started'} onChange={event => updateRequirement(requirement.id, { progress: event.target.value as ProgramRequirement['progress'] })}>{['Not started', 'In progress', 'Ready', 'Not applicable'].map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="block text-[9px] font-medium text-slate-600">Link applicant document<select className="input mt-1" value={requirement.documentId ?? ''} onChange={event => updateRequirement(requirement.id, { documentId: event.target.value || undefined })}><option value="">No document linked</option>{documents.map(document => <option key={document.id} value={document.id}>{document.name} · {document.status}</option>)}</select></label>
+          <label className="block text-[9px] font-medium text-slate-600">Deadline (verify with official evidence)
+            <input type="date" value={requirement.deadline} onChange={event => updateRequirement(requirement.id, { deadline: event.target.value })} className="input mt-1" />
+            <span className="mt-1 block text-[8px] font-normal text-slate-500">{hasCurrentRequirementEvidence(requirement, university.intake) ? `Current evidence confirmed for ${university.intake}.` : `Not verified for ${university.intake}; a date alone is not official confirmation.`}</span>
+          </label>
+          <Field label="Notes / conditions"><input value={requirement.notes} onChange={event => updateRequirement(requirement.id, { notes: event.target.value })} className="input" /></Field>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><span className="text-[8px] text-slate-500">Evidence records: {requirement.evidence.length} · this exact admission requirement</span>
+          <button type="button" onClick={() => updateRequirement(requirement.id, { evidence: [...requirement.evidence, { id: newId(), fieldKey: 'admissionRequirement', url: '', quote: '', intake: university.intake, checkedAt: '', status: 'unknown' }] })} className="text-[9px] font-semibold text-teal">Add official evidence</button>
+          <button type="button" onClick={() => patch({ requirements: requirements.filter(item => item.id !== requirement.id) })} className="text-[9px] text-[#9b5945]">Remove</button></div>
+        {requirement.evidence.map(evidence => <div key={evidence.id} className="mt-2 grid gap-2 rounded border border-[#e7e5de] bg-white p-2 sm:grid-cols-2">
+          <Field label="Official program URL"><input type="url" value={evidence.url} onChange={event => updateRequirementEvidence(requirement, evidence.id, { url: event.target.value })} className="input" /></Field>
+          <Field label="Exact wording"><textarea value={evidence.quote} onChange={event => updateRequirementEvidence(requirement, evidence.id, { quote: event.target.value })} rows={2} className="input" /></Field>
+          <Field label="Applicable intake"><input value={evidence.intake} onChange={event => updateRequirementEvidence(requirement, evidence.id, { intake: event.target.value })} className="input" /></Field>
+          <div className="grid grid-cols-2 gap-2"><Field label="Checked date"><input type="date" value={evidence.checkedAt} onChange={event => updateRequirementEvidence(requirement, evidence.id, { checkedAt: event.target.value })} className="input" /></Field>
+            <label className="block text-[9px] font-medium text-slate-600">Verification<select className="input mt-1" value={evidence.status} onChange={event => updateRequirementEvidence(requirement, evidence.id, { status: event.target.value as Verification })}>{(['unknown', 'unverified', 'confirmed', 'historical', 'estimate'] as Verification[]).map(value => <option key={value}>{value}</option>)}</select></label></div>
+          <button type="button" onClick={() => updateRequirement(requirement.id, { evidence: requirement.evidence.filter(item => item.id !== evidence.id) })} className="text-left text-[9px] text-[#9b5945]">Remove evidence</button>
+        </div>)}
+      </div>)}
+      {!requirements.length && <p className="mt-2 text-[9px] text-slate-400">No requirements recorded. Add prompts, then verify them against this program’s current official guide.</p>}</div>
+    </div>
+    <div>
+      <div className="flex items-center justify-between"><h4 className="text-[10px] font-semibold">Recommendation-letter tracking</h4><button type="button" onClick={() => patch({ recommendations: [...recommendations, { id: newId(), recommender: '', email: '', status: 'Not identified', requestedAt: '', dueDate: '', submittedAt: '', notes: '' }] })} className="rounded border px-2 py-1 text-[9px]">Add recommender</button></div>
+      <div className="mt-2 space-y-2">{recommendations.map(letter => <div key={letter.id} className="grid gap-2 rounded-lg bg-[#faf9f6] p-2 sm:grid-cols-2">
+        <Field label="Recommender"><input value={letter.recommender} onChange={event => updateRecommendation(letter.id, { recommender: event.target.value })} className="input" /></Field>
+        <Field label="Email (optional)"><input type="email" value={letter.email} onChange={event => updateRecommendation(letter.id, { email: event.target.value })} className="input" /></Field>
+        <label className="block text-[9px] font-medium text-slate-600">Status<select className="input mt-1" value={letter.status} onChange={event => updateRecommendation(letter.id, { status: event.target.value as RecommendationLetter['status'] })}>{['Not identified', 'To request', 'Requested', 'Submitted', 'Declined', 'Unknown'].map(value => <option key={value}>{value}</option>)}</select></label>
+        <Field label="Requested date"><input type="date" value={letter.requestedAt} onChange={event => updateRecommendation(letter.id, { requestedAt: event.target.value })} className="input" /></Field>
+        <Field label="Deadline"><input type="date" value={letter.dueDate} onChange={event => updateRecommendation(letter.id, { dueDate: event.target.value })} className="input" /></Field>
+        <Field label="Submitted date"><input type="date" value={letter.submittedAt} onChange={event => updateRecommendation(letter.id, { submittedAt: event.target.value })} className="input" /></Field>
+        <Field label="Notes"><input value={letter.notes} onChange={event => updateRecommendation(letter.id, { notes: event.target.value })} className="input" /></Field>
+        <button type="button" onClick={() => patch({ recommendations: recommendations.filter(item => item.id !== letter.id) })} className="self-end text-left text-[9px] text-[#9b5945]">Remove recommender</button>
+      </div>)}
+      {!recommendations.length && <p className="mt-2 text-[9px] text-slate-400">No recommender records yet; required count must be verified per program.</p>}</div>
+    </div>
+  </section>
+}
+
 function EvidenceCard({ evidence, timezone, onStatusChange, onAcknowledge }: { evidence: Evidence; timezone: string; onStatusChange: (status: Verification) => void; onAcknowledge: () => void }) {
   return <div className="mb-2 rounded-lg border border-[#e8e6df] bg-white p-3">
     <div className="flex items-center justify-between"><div className="text-[10px] font-semibold">{evidence.type}</div><select aria-label={`Verification status for ${evidence.type}`} value={evidence.status} onChange={event => onStatusChange(event.target.value as Verification)} className="rounded border px-2 py-1 text-[9px]">{(['unknown', 'unverified', 'confirmed', 'historical', 'estimate'] as Verification[]).map(status => <option key={status} value={status}>{status}</option>)}</select></div>
-    <a href={evidence.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-[9px] text-teal hover:underline">{evidence.url} <ExternalLink size={10} className="inline" /></a>
+    <a href={safeHttpsUrl(evidence.url) ?? undefined} target="_blank" rel="noreferrer" className="mt-1 block break-all text-[9px] text-teal hover:underline">{evidence.url} <ExternalLink size={10} className="inline" /></a>
     <div className="mt-2 grid grid-cols-2 gap-1 text-[9px] text-slate-500"><span>Intake: {evidence.intake}</span><span>Published: {evidence.publishedAt ? dateLabel(evidence.publishedAt) : 'Unknown'}</span><span>Last checked: {timestampLabel(evidence.checkedAt, timezone)}</span><span>{evidence.needsReview ? 'Page changed Â· review required' : 'Change status: not reported'}</span></div>
     <p className="mt-2 text-[9px] text-slate-500">{evidence.note}</p>
     <p className="mt-1 text-[9px] text-slate-400">Confirm only after checking the official page for this program and intake. A successful fetch alone is not confirmation.</p>
@@ -1149,6 +1541,13 @@ function Metric({ label, value, note, icon: Icon, tint, onClick }: { label: stri
   const tones: Record<string, string> = { teal: 'bg-[#e8f1ec] text-[#247e77]', gold: 'bg-[#f5efe1] text-[#a18145]', rose: 'bg-[#f8eeea] text-[#b97760]', slate: 'bg-[#eef0ee] text-[#657371]' }
   const inner = <><div className="flex items-start justify-between"><span className="text-[10px] font-medium text-slate-500">{label}</span><span className={`grid h-8 w-8 place-items-center rounded-lg ${tones[tint] ?? tones.slate}`}><Icon size={15} /></span></div><div className="mt-2 font-display text-[25px] font-bold tracking-[-.04em]">{value}</div><div className="mt-1 text-[9px] text-slate-500">{note}</div></>
   return onClick ? <button onClick={onClick} className="surface rounded-xl border border-[#e7e5de] bg-white p-4 text-left transition hover:border-[#d3d9d1]">{inner}</button> : <div className="surface rounded-xl border border-[#e7e5de] bg-white p-4">{inner}</div>
+}
+
+function ReadinessItem({ label, value, complete }: { label: string; value: string; complete: boolean }) {
+  return <div className="rounded-lg bg-[#faf9f6] p-3">
+    <div className="flex items-center justify-between gap-2"><span className="text-[9px] font-semibold">{label}</span><span className={`rounded-full px-2 py-0.5 text-[8px] ${complete ? 'bg-[#e8f1ec] text-teal' : 'bg-[#f6f1e4] text-[#8f7543]'}`}>{complete ? 'Entered' : 'Needs entry'}</span></div>
+    <div className="mt-1 break-words text-[9px] text-slate-500">{value}</div>
+  </div>
 }
 
 function TaskRow({ task, timezone, onToggle }: { task: Task; timezone: string; onToggle: () => void }) {
