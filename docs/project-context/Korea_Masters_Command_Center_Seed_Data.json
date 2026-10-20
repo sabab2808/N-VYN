@@ -1,0 +1,450 @@
+{
+  "project": {
+    "name": "Korea Master's Command Center",
+    "prepared_at": "2026-10-20",
+    "target_intake": "September 2027 / Fall 2027",
+    "goal": "Fully funded South Korea Master's: tuition, living expenses, essential costs",
+    "application_style": "Independent, no agency",
+    "data_policy": "All admissions/funding facts require official evidence and explicit verification status."
+  },
+  "applicant": {
+    "preferred_name": "Md. Sadman Al Islam Shabab",
+    "short_name": "Shabab",
+    "country": "Bangladesh",
+    "university": "Daffodil International University",
+    "department": "Computer Science and Engineering",
+    "academic_status": "Final semester (latest reported 2026-10-12; editable)",
+    "cgpa": {
+      "value": 3.68,
+      "scale": 4.0,
+      "note": "Use over older 3.65 draft"
+    },
+    "ssc_gpa": 5.0,
+    "hsc_gpa": 5.0,
+    "ielts": "Booked; result pending",
+    "toefl": "Not reported as taken",
+    "available_documents": [
+      "Passport",
+      "University transcript",
+      "Medium of Instruction certificate"
+    ],
+    "unknowns": [
+      "Graduation date",
+      "Passport expiry",
+      "IELTS date and score",
+      "Final research specialization",
+      "Recommendation writers",
+      "Available upfront budget",
+      "English-only vs Korean-taught preference"
+    ],
+    "funding_requirement": [
+      "Full tuition",
+      "Living expenses",
+      "Essential costs"
+    ]
+  },
+  "research_interests_to_explore": [
+    "AI and machine learning",
+    "AI and cybersecurity/anomaly detection",
+    "Software engineering and systems",
+    "Networks and distributed systems",
+    "Embedded systems and computer architecture",
+    "Open to strong funded CS research"
+  ],
+  "projects": [
+    {
+      "name": "TakaSafe",
+      "demo": "https://takasafe-diu.surge.sh/",
+      "repository": "https://github.com/Tanvir4n/TakaSafe",
+      "area": "Transaction-risk/fraud detection",
+      "notes": "Discussed amount validation, risk engine, unusual-transaction verification, face-verification triggers, notifications, roles, responsive UI. Earlier version had no database; ৳500 falsely marked as fraud was reported. Confirm current status and personal contribution."
+    },
+    {
+      "name": "HostelMania",
+      "area": "Full-stack web application",
+      "technologies_reported": [
+        "React",
+        "HTML5",
+        "Tailwind CSS",
+        "Node/Express",
+        "MongoDB",
+        "Context API",
+        "TanStack Query",
+        "Stripe",
+        "react-hook-form"
+      ],
+      "note": "Later academic work mentioned MySQL database hostelmania, OOP connection, UML; verify which version uses which stack."
+    },
+    {
+      "name": "Secure FileShell Professional Edition v4.0.0",
+      "area": "Operating systems/security",
+      "details": "Needs user confirmation"
+    },
+    {
+      "name": "FPGA-Based CPU Implementation",
+      "area": "Computer architecture/hardware",
+      "details": "Needs user confirmation"
+    },
+    {
+      "name": "Cisco Packet Tracer Small Business Network Practice",
+      "topics": [
+        "NAT",
+        "DHCP",
+        "DNS",
+        "Routing"
+      ]
+    },
+    {
+      "name": "Micro Jobs Platform",
+      "database": "MySQL"
+    },
+    {
+      "name": "Cyberbullying Detection Report",
+      "coauthors": [
+        "Md Sadman Al Islam Shabab",
+        "Mohd. Amjad Hossain",
+        "Rifah Tasfia Rini",
+        "Fatin Israk Sakib"
+      ],
+      "note": "Confirm exact scope and contribution"
+    },
+    {
+      "name": "AI Hackathon",
+      "result": "Team placed 5th",
+      "note": "Confirm event/date/project/contribution"
+    }
+  ],
+  "extracurricular": [
+    "Hult Prize at DIU 2026 Organizing Committee Member",
+    "Earlier Hult Prize at DIU Web Executive Member",
+    "Computer & Programming Club; support/organizing for ICPC 2024 regional contest and other programming events; confirm dates/roles"
+  ],
+  "candidate_universities_unverified": [
+    "KAIST",
+    "GIST",
+    "UNIST",
+    "DGIST",
+    "POSTECH",
+    "Pusan National University",
+    "Kyungpook National University",
+    "Chungnam National University",
+    "Jeonbuk National University",
+    "Chonnam National University",
+    "Chungbuk National University",
+    "Gyeongsang National University",
+    "Kangwon National University",
+    "Pukyong National University",
+    "Incheon National University",
+    "SeoulTech",
+    "University of Seoul",
+    "Kongju National University",
+    "Sunchon National University",
+    "Jeju National University",
+    "Korea National University of Transportation",
+    "Seoul National University",
+    "Ajou University",
+    "Inha University",
+    "Sungkyunkwan University"
+  ],
+  "historical_research_notes": [
+    {
+      "university": "GIST",
+      "tuition_reference_krw_per_semester": 3607000,
+      "status": "Historical lead; verify current program/cycle",
+      "urls": [
+        "https://www.gist.ac.kr/iadm/html/sub02/020101.html",
+        "https://www.gist.ac.kr/iadm/html/sub04/0401.html",
+        "https://www.gist.ac.kr/iadm/html/sub02/020102.html"
+      ],
+      "note": "Previously found Fall 2027 dates Mar 9-Apr 8, 2027; results Jun 4; enrollment Jul 5. Reverify."
+    },
+    {
+      "university": "KAIST",
+      "status": "Historical lead; verify",
+      "urls": [
+        "https://admission.kaist.ac.kr/intl-graduate/Admission/Eligibility",
+        "https://admission.kaist.ac.kr/intl-graduate/FinancialSupport/Scholarship/KAISTScholarship",
+        "https://admission.kaist.ac.kr/intl-graduate/Admission/YearlyTimelines"
+      ],
+      "note": "Earlier notes described tuition/insurance support and conditional stipends. KGPS was described as full tuition plus KRW 1,000,000/month for selected Master's applicants for four regular semesters. Verify current rules; Fall 2027 timeline not confirmed."
+    },
+    {
+      "university": "UNIST",
+      "status": "Historical lead; verify",
+      "urls": [
+        "https://www.unist.ac.kr/unist/admissions/scholarship-info-grad.do",
+        "https://admg-intl.unist.ac.kr/"
+      ],
+      "note": "Earlier page described tuition support/waivers and stipends for eligible categories."
+    },
+    {
+      "university": "POSTECH",
+      "status": "Prior-cycle guide only",
+      "url": "https://adm-g.postech.ac.kr/ENG/wp-content/uploads/2026/02/20260209111830_8CIIErRQu2.pdf"
+    },
+    {
+      "university": "SeoulTech",
+      "status": "Historical lead; verify",
+      "url": "https://en.seoultech.ac.kr/adm/graduate/scholar",
+      "note": "Earlier info described 50–100% first-semester tuition scholarship; living costs not established."
+    },
+    {
+      "university": "Kyungpook National University",
+      "status": "Historical lead; verify",
+      "url": "https://en.knu.ac.kr/admission/foreign02_inc.htm",
+      "note": "Earlier info described 50%/100% tuition waivers for selected students; stipend not guaranteed by that information."
+    },
+    {
+      "university": "Pusan National University",
+      "tuition_reference_krw_per_semester": 3481000,
+      "status": "Historical fee reference; verify exact program"
+    },
+    {
+      "university": "KAIST",
+      "tuition_reference_krw_per_semester": 9559000,
+      "status": "Historical comparison figure; verify"
+    },
+    {
+      "university": "POSTECH",
+      "tuition_reference_krw_per_year": 10608000,
+      "status": "Historical comparison figure; verify"
+    }
+  ],
+  "official_portals": {
+    "Study in Korea": "https://www.studyinkorea.go.kr/",
+    "GKS": "https://gks.go.kr/ko/plan/scholarship.do",
+    "Korean Embassy in Bangladesh": "https://www.mofa.go.kr/bd-en/index.do",
+    "Student visa guide": "https://www.studyinkorea.go.kr/en_US/plan/visaAndStay.do",
+    "Embassy student visa instructions previously identified": "https://overseas.mofa.go.kr/bd-en/brd/m_23302/view.do?page=2&seq=2"
+  },
+  "funding_statuses": [
+    "Verified full funding",
+    "Potentially full funding — confirm details",
+    "Tuition-only / partial funding",
+    "Unfunded",
+    "Unknown"
+  ],
+  "verification_statuses": [
+    "Verified for Fall 2027",
+    "Official page — intake applicability unconfirmed",
+    "Historical official data",
+    "Estimated — needs verification",
+    "Unknown",
+    "Conflicting sources",
+    "Source unavailable / stale"
+  ],
+  "application_pipeline": [
+    "Researching",
+    "Supervisor contact",
+    "Preparing documents",
+    "Ready to submit",
+    "Submitted",
+    "Interview/additional assessment",
+    "Admitted",
+    "Waitlisted",
+    "Rejected",
+    "Offer accepted",
+    "Visa preparation",
+    "Visa approved",
+    "Pre-departure",
+    "Withdrawn/offer declined"
+  ],
+  "roadmap": [
+    {
+      "period": "Oct-Nov 2026",
+      "phase": "Build foundation",
+      "tasks": [
+        "IELTS",
+        "CV",
+        "SOP",
+        "Research areas/labs",
+        "Recommendation requests"
+      ]
+    },
+    {
+      "period": "Nov-Dec 2026",
+      "phase": "Research universities",
+      "tasks": [
+        "Rank by research fit/funding",
+        "Verify tuition/living costs",
+        "Check scholarships/assistantships",
+        "Contact supervisors"
+      ]
+    },
+    {
+      "period": "Dec 2026-Feb 2027",
+      "phase": "Prepare applications",
+      "tasks": [
+        "Organize certificates/transcripts",
+        "Check translation/authentication",
+        "Polish GitHub/portfolio",
+        "Finalize recommendations",
+        "Monitor official notices"
+      ]
+    },
+    {
+      "period": "Feb-Apr 2027",
+      "phase": "Applications and GKS",
+      "tasks": [
+        "Read official GKS Graduate 2027 notice when available",
+        "Compare tracks",
+        "Submit eligible applications",
+        "Track fees/receipts",
+        "Interview preparation"
+      ]
+    },
+    {
+      "period": "Apr-Jun 2027",
+      "phase": "Compare offers",
+      "tasks": [
+        "Track decisions",
+        "Get written funding terms",
+        "Calculate remaining costs",
+        "Choose financially viable offer"
+      ]
+    },
+    {
+      "period": "Jun-Aug 2027",
+      "phase": "Visa and departure",
+      "tasks": [
+        "Authentication",
+        "Admission/funding documents",
+        "Current visa checklist",
+        "Housing",
+        "Travel/settlement budget"
+      ]
+    }
+  ],
+  "document_categories": {
+    "academic": [
+      "Transcript/grading scale",
+      "Expected/provisional graduation certificate if accepted",
+      "Final degree certificate",
+      "SSC/HSC certificates/transcripts",
+      "Translations if required",
+      "Authentication/apostille if required"
+    ],
+    "identity_english": [
+      "Passport and expiry",
+      "IELTS booking/result",
+      "Other tests only if taken",
+      "Photograph"
+    ],
+    "application_research": [
+      "CV",
+      "SOP",
+      "Research proposal/study plan if required",
+      "Recommendations",
+      "Project portfolio/GitHub",
+      "Awards",
+      "Publications/writing samples if applicable"
+    ],
+    "post_admission": [
+      "Admission letter",
+      "Scholarship letter",
+      "Authenticated documents",
+      "Current visa documents",
+      "Medical/TB docs if required",
+      "Housing confirmation",
+      "Proof of funds if required",
+      "Travel/settlement budget"
+    ]
+  },
+  "website_sections": [
+    "Dashboard",
+    "Universities",
+    "Programs & Labs",
+    "Scholarships & Funding",
+    "Applications",
+    "Tasks/Roadmap",
+    "Calendar",
+    "Documents",
+    "Professor Outreach",
+    "Budget Calculator",
+    "Notifications",
+    "Reports/Exports",
+    "Settings/Data Sources"
+  ],
+  "design": {
+    "palette": [
+      "Midnight navy",
+      "Restrained teal",
+      "Warm ivory",
+      "Muted gold"
+    ],
+    "style": [
+      "Premium research/productivity interface",
+      "Subtle Korean-inspired geometry",
+      "Clear typography",
+      "Whitespace",
+      "Accessible contrast",
+      "Purposeful charts",
+      "Responsive desktop/mobile",
+      "Light/dark mode"
+    ],
+    "avoid": [
+      "Generic AI landing page",
+      "Excessive gradients",
+      "Oversized cards",
+      "Fake metrics",
+      "Unnecessary animations"
+    ]
+  },
+  "source_monitoring": {
+    "fields": [
+      "Entity/field",
+      "Value/units",
+      "Official URL",
+      "Source category",
+      "Publication/effective date",
+      "Intake applicability",
+      "Last checked",
+      "Last successful fetch",
+      "Verification status",
+      "Evidence note",
+      "Change history",
+      "Reviewer/time",
+      "Conflict notes"
+    ],
+    "rules": [
+      "Successful fetch is not verification",
+      "Use official sources as primary evidence",
+      "Search snippets alone are insufficient",
+      "Show stale status when refresh fails",
+      "Flag changes for review instead of silently overwriting",
+      "Respect access rules/rate limits",
+      "Allow manual refresh"
+    ]
+  },
+  "budget_fields": [
+    "Tuition per semester/year",
+    "Mandatory fees",
+    "Housing/food/transport/phone/personal expenses",
+    "Insurance",
+    "Visa/document processing",
+    "Flight",
+    "Initial settlement",
+    "Deposits/dorm fees",
+    "Stipend amount/duration",
+    "Guaranteed tuition coverage",
+    "Confirmed allowances",
+    "Funding start/payment schedule",
+    "Currency conversion assumption/date"
+  ],
+  "known_unknowns": [
+    "IELTS date/score",
+    "Graduation date",
+    "Research specialization",
+    "Recommendation writers",
+    "Verified Fall 2027 programs/deadlines",
+    "Current tuition and mandatory fees",
+    "Exact scholarship/stipend packages",
+    "Supervisor-contact requirements",
+    "GKS Graduate 2027 notice",
+    "Authentication rules per university",
+    "Passport expiry/current visa rules",
+    "Upfront budget",
+    "English-only vs Korean-taught preference"
+  ],
+  "agent_instruction": "Treat this as persistent project context, not as a verified live database. Import historical notes as historical/unverified, do not invent missing values, use linked normalized records, and allow export of context as Markdown/JSON."
+}

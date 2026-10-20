@@ -11,9 +11,9 @@ A private, evidence-first planning workspace for a Bangladeshi CSE applicant tar
 - The `.xlsx` importer reads the `Ranked university list`, `Application requirements`, and `Timeline` sheets locally in the browser. Imported entries and workbook URLs are unverified leads; broad timeline ranges become undated tasks, never exact calendar deadlines. A CGPA discrepancy between the workbook and profile generates a review task and does not overwrite either value.
 - Profile settings include the public portfolio, GitHub, LinkedIn, contact email, CV link, skills, and experience. These are editable; they are not independently verified by the application.
 - Official-source search is a secured server-side Brave Search proxy. Search snippets are leads, not verified facts, and searches are restricted to official-source domains. Search requires Supabase authentication and a server-side Brave API key; the key must never be placed in a `VITE_*` variable.
-- A successful HTTP fetch only records a timestamp/status/content hash. It never verifies a source or changes a confirmed fact. Changed page hashes set `needs_review` and create a `source_changes` record.
+- A successful HTTP fetch only records a timestamp/status/content hash and a bounded plain-text page snapshot. It never verifies a source or changes a confirmed fact. Changed page hashes set `needs_review` and create a `source_changes` record with the previous and new snapshots for manual review.
 - Only record a fact as confirmed after reviewing the cited official source and confirming its intake and relevance. Preserve previous evidence when a page changes.
-- The browser-only local mode stores workspace state in local storage. Do not use it for confidential files. Metadata fields in some MVP pages remain browser-local until full CRUD screens are connected.
+- Browser-only local mode stores workspace state in local storage; do not treat it as a secure vault. Authenticated accounts sync budget scenarios, document checklist metadata and private files, and professor contacts to owner-scoped Supabase tables.
 - No email is sent by the professor CRM. It does not dispatch reminders, either; reminder scheduling is a backend extension point.
 
 ## Local development
@@ -29,46 +29,26 @@ Open the local URL printed by Vite. Without credentials, the application works i
 
 ```env
 VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_YOUR_KEY
 ```
 
-Restart Vite after changing environment values. Only the public anon key belongs in the browser; never expose a service-role key, database password, or scheduler secret in `VITE_*` variables.
+Restart Vite after changing environment values. Only the publishable key belongs in the browser; never expose a secret key, service-role key, database password, or scheduler secret in `VITE_*` variables. `VITE_SUPABASE_ANON_KEY` remains supported for older local setups.
 
 ## Supabase setup
 
 1. Create a Supabase project. Keep Auth email/password enabled and configure its redirect/confirmation settings for your deployment.
-2. Apply migrations with the Supabase CLI (`supabase db push`) or SQL editor, in filename order. `20261020000000_initial_schema.sql` creates normalized user-owned tables, owner-scoped RLS, an auth profile trigger, and a private document bucket with UID-folder policies. `20261021000000_international_research.sql` adds country/intake and editable profile research metadata, plus a private search cache and rate limiter. The browser uses the anon key; RLS is the authorization boundary.
-3. Set the two `VITE_*` values above. The UI loads and persists the university and task records it edits for an authenticated user. Other record surfaces are currently local-only; their tables and access policies are prepared in the migration.
-4. Deploy the refresh function:
+2. Apply migrations with the Supabase CLI (`supabase db push`) or SQL editor, in filename order. `20261020000000_initial_schema.sql` creates normalized user-owned tables, owner-scoped RLS, an auth profile trigger, and a private document bucket with UID-folder policies. `20261021000000_international_research.sql` adds country/intake and editable profile research metadata, plus a private search cache and rate limiter. `20261022000000_account_portability_and_source_review.sql` creates the owner-scoped budget scenario and adds document availability and bounded source-change snapshots. The browser uses a publishable key; RLS is the authorization boundary.
+3. Set the two `VITE_*` values above. After signing in, universities, application stages, tasks, budget scenarios, document checklist metadata, and professor contacts load from and persist to the user's Supabase account. If the new migration is not applied, the affected account records show a load/save error rather than claiming cloud sync is active. Guest mode stays local to that browser.
+4. Deploy the refresh function with gateway JWT verification enabled:
 
    ```powershell
-   supabase functions deploy refresh-sources --no-verify-jwt
-   supabase secrets set REFRESH_JOB_SECRET=YOUR_LONG_RANDOM_SECRET REFRESH_ALLOWED_HOSTS=snu.ac.kr,kaist.ac.kr,unist.ac.kr,studyinkorea.go.kr,mofa.go.kr,cit.tum.de,daad.de,uni-assist.de,hochschulkompass.de,campusfrance.org,campusfrance.com,gouv.fr,universite-paris-saclay.fr,mosig.imag.fr
+   supabase functions deploy refresh-sources
+   supabase secrets set REFRESH_ALLOWED_HOSTS=snu.ac.kr,kaist.ac.kr,unist.ac.kr,gist.ac.kr,postech.ac.kr,seoultech.ac.kr,knu.ac.kr,studyinkorea.go.kr,mofa.go.kr
    ```
 
-   The function verifies a user's JWT itself for manual calls. The `--no-verify-jwt` flag allows the scheduled request to use the separate server-only `x-job-secret`; configure a long random value and do not reuse an account password. `REFRESH_ALLOWED_HOSTS` must be a comma-separated allowlist of trusted official hostnames; redirects are revalidated against it, so a user-supplied source cannot make the privileged job fetch arbitrary hosts. The listed European domains cover a few official university pages and study-information portals, not all universities. Add a university hostname only after confirming it is the institution's official domain. The function also needs the Supabase-provided server secrets `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`.
-5. Enable `pg_cron`, `pg_net`, and Vault in Supabase. Store the function endpoint and scheduler secret in Vault; never paste these values into this repository. Example SQL after saving the Vault secrets `refresh_function_url` and `refresh_job_secret`:
-
-   ```sql
-   select cron.schedule(
-     'refresh-official-sources-daily',
-     '15 2 * * *',
-     $job$
-       select net.http_post(
-         url := (select decrypted_secret from vault.decrypted_secrets where name = 'refresh_function_url'),
-         headers := jsonb_build_object(
-           'Content-Type', 'application/json',
-           'x-job-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'refresh_job_secret')
-         ),
-         body := '{}'::jsonb,
-         timeout_milliseconds := 180000
-       );
-     $job$
-   );
-   ```
-
-   Set the daily hour to a quiet time appropriate for your project. Each run checks at most six URLs, one URL per hostname, applies conditional HTTP caching, retries transient failures up to three times, and rate-limits between hosts. Per-source checks have a five-minute cooldown. Inspect `refresh_logs` and `source_changes`. The `refresh-sources` function currently monitors URLs recorded in `source_evidence`; add reviewed official source URLs through authenticated CRUD or SQL under the correct `user_id`.
-6. For document uploads, use the private `private-documents` bucket and paths beginning with the authenticated user's UUID. Access must use authenticated Storage APIs/signed URLs; never make the bucket public. Current UI documents are metadata-only and do not upload files.
+   `REFRESH_ALLOWED_HOSTS` is a comma-separated allowlist of trusted official hostnames; redirects are revalidated against it. Add a university hostname only after confirming it is the institution's official domain. Supabase injects the URL and server API keys into Edge Functions. Manual refresh requires a signed-in user. Scheduled refresh is not enabled in this project; do not disable gateway JWT verification to schedule it without an explicit security review.
+5. Scheduled refresh is not configured. The deployed function requires Supabase gateway JWT verification, so do not call it from an unauthenticated cron job or disable gateway verification. Manual refresh requires a signed-in user. Each run checks at most six URLs, one URL per hostname, applies conditional HTTP caching, retries transient failures up to three times, and rate-limits between hosts. Per-source checks have a five-minute cooldown. Inspect `refresh_logs` and `source_changes`. The function monitors URLs recorded in `source_evidence`; add reviewed official source URLs through authenticated CRUD or SQL under the correct `user_id`. Successful refreshes retain at most 20,000 characters of plain-text page evidence for before/after comparison; this is source-page evidence only and does not update or verify structured facts.
+6. In the signed-in **Documents** view, upload PDF/JPG/PNG files up to 20 MB. Files are stored in the private `private-documents` bucket under the authenticated user's UUID and opened using 60-second signed URLs. Do not make the bucket public.
 7. To enable live official-domain research, add your Brave Search API credential as a Supabase function secret, deploy the Edge Function, and sign in:
 
    ```powershell
@@ -81,6 +61,10 @@ Restart Vite after changing environment values. Only the public anon key belongs
 ## Workbook import and international research
 
 In **University research**, choose **Import .xlsx** and select the applicant's workbook. Review the preview and any CGPA warning before confirming. The workbook is parsed locally, and the original file is not uploaded or modified. Existing starter examples with matching names are enriched; existing non-example universities are not overwritten. Imported claims stay explicitly unverified and must be checked against the university's current graduate admissions, program, lab, and scholarship sources before entering decisions or exact dates.
+
+The authenticated budget scenario, document checklist metadata, and professor CRM now sync to the signed-in user's Supabase account. The budget saves after a short pause in editing; currencies are stored as separate user-selected scenarios (KRW, EUR, or BDT), with no conversion. Documents store checklist fields only, never private file content. Professor contacts support add, edit, and remove; no email is sent. In the guest workspace these records remain browser-local.
+
+In **Sources & reports**, manually refresh tracked sources and review any changed page in **Source-change review queue**. Compare the retained plain-text captures and SHA-256 hashes, then open the official source. Marking a change reviewed or dismissed only closes that queue item and, when no changes remain pending for that URL, clears its review flag. It does not update a deadline, scholarship term, or verification status; update those facts manually after confirming the source.
 
 The persistent context pack is stored in `docs/project-context/`. Its 25 Korean university candidates and six-phase roadmap load as planning records in a new local workspace. Existing local workspaces can add missing entries with **Import Korea context** in University research. In an authenticated workspace, this action compares normalized university names and task titles in Supabase, then inserts only missing records through the existing university → program → application → source-evidence and task tables. Existing database values and applicant profile fields are left untouched. Candidate program details, cities, deadlines, tuition, and funding remain unknown unless the context pack supplies a historical lead; those leads are explicitly labeled historical and still require current official verification.
 
@@ -98,6 +82,6 @@ Deploy the `dist` directory to a static host configured for SPA fallback, set th
 ## Current MVP boundaries
 
 - Research entries and official sources in the starter data are examples and start unverified. Source refresh checks page changes, not structured facts, and does not resolve conflicting claims.
-- Only university and task CRUD are currently wired to Supabase. Applications are represented by university stage in the UI. Document upload, recurring reminders, notification delivery, activity streaks, complete application evidence/decision forms, professor/contact persistence, and secured backup export need follow-on implementation before relying on the product as a complete production system.
+- University, application-stage, task, budget, document-metadata/file, and professor-contact persistence are wired to Supabase. Applications are represented by university stage in the UI. Recurring reminders, notification delivery, activity streaks, complete application evidence/decision forms, and secured backup export still need follow-on implementation before relying on the product as a complete production system.
 - Funding charts and costs remain blank until you enter verified or explicitly labeled planning values. The calculator is an editable annual scenario, not financial advice and not yet linked to evidence records.
 - Test workflows manually after configuring a project; no credentials or official-source facts are bundled.
