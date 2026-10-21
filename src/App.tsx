@@ -149,6 +149,7 @@ function App() {
   const [view, setView] = useState<View>('Overview')
   const [workspace, setWorkspace] = useState<Workspace>(() => readLocal('korea-command-center:guest'))
   const [userId, setUserId] = useState<string | null>(null)
+  const [liveSyncState, setLiveSyncState] = useState<'local' | 'connecting' | 'connected' | 'reconnecting' | 'fallback' | 'error'>('local')
   const [email, setEmail] = useState('')
   const [dark, setDark] = useState(() => localStorage.getItem('kcc-dark') === 'true')
   const [query, setQuery] = useState('')
@@ -305,6 +306,7 @@ function App() {
     const client = supabase
     let active = true
     let syncTimer = 0
+    let realtimeConnected = false
     let opportunityIds = new Set(opportunitySnapshot.current.map(item => item.id))
     const syncAccount = async () => {
       const [profile, universities, tasks, programs, applications, evidence, opportunities, failures, budgetRow, documents, changes] = await Promise.all([
@@ -322,9 +324,11 @@ function App() {
       ])
       if (!active) return
       if ([universities, tasks, programs, applications, evidence, opportunities, budgetRow, documents].some(result => result.error)) {
+        setLiveSyncState('error')
         setToast('Cloud updates could not be fully refreshed. Check your connection and sign-in status.')
         return
       }
+      setLiveSyncState(realtimeConnected ? 'connected' : 'fallback')
       const universityRows = universities.data ?? []
       const programRows = programs.data ?? []
       const applicationRows = applications.data ?? []
@@ -464,13 +468,29 @@ function App() {
       event: '*', schema: 'public', table, filter: `user_id=eq.${userId}`,
     }, scheduleSync))
     channel.on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, scheduleSync)
-      .subscribe(status => { if (status === 'SUBSCRIBED') scheduleSync() })
+      .subscribe(status => {
+        if (status === 'SUBSCRIBED') {
+          realtimeConnected = true
+          setLiveSyncState('connected')
+          scheduleSync()
+        } else if (status === 'CHANNEL_ERROR') {
+          realtimeConnected = false
+          setLiveSyncState('fallback')
+        } else if (status === 'TIMED_OUT' || status === 'CLOSED') {
+          realtimeConnected = false
+          setLiveSyncState('reconnecting')
+        }
+      })
     const onFocus = () => { if (document.visibilityState === 'visible') scheduleSync() }
+    const fallbackTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void syncAccount()
+    }, 60_000)
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onFocus)
     return () => {
       active = false
       window.clearTimeout(syncTimer)
+      window.clearInterval(fallbackTimer)
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onFocus)
       void client.removeChannel(channel)
@@ -537,6 +557,8 @@ function App() {
         universities.error, profile.error, tasks.error, programs.error, applications.error, evidence.error,
         failures.error, cloudBudget.error, cloudDocuments.error, sourceChangesResult.error, opportunitiesResult.error,
       ].filter(Boolean)
+      const coreLoadErrors = [universities.error, profile.error, tasks.error, programs.error,
+        applications.error, evidence.error, cloudBudget.error, cloudDocuments.error, opportunitiesResult.error].filter(Boolean)
       if (loadErrors.length) setToast(`Some account data could not be loaded: ${loadErrors.map(error => error!.message).join('; ')}`)
       if (!cloudBudget.error) setBudget(cloudBudget.data ? {
         currency: cloudBudget.data.currency,
@@ -571,7 +593,12 @@ function App() {
           } as SourceChange]
         }))
       }
-      if (loadErrors.length === 0) setCloudDataUserId(uid)
+      if (coreLoadErrors.length === 0) {
+        setCloudDataUserId(uid)
+        setLiveSyncState('connecting')
+      } else {
+        setLiveSyncState('error')
+      }
       setWorkspace(readLocal(`korea-command-center:${uid}`))
       setWorkspace(prev => ({
         ...prev,
@@ -631,6 +658,7 @@ function App() {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!session) {
         setCloudDataUserId(null); setSourceChanges([])
+        setLiveSyncState('local')
         setUserId(null); setEmail(''); setWorkspace(readLocal('korea-command-center:guest'))
         setRefreshFailures([])
         setBudget(readBudget('kcc-budget:guest'))
@@ -1025,7 +1053,7 @@ function App() {
   }
   const signIn = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!supabase) { notify('Add Supabase URL and anon key to .env.local to enable sign-in.'); return }
+    if (!supabase) { notify('Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to .env.local to enable sign-in.'); return }
     setAuthBusy(true)
     const form = new FormData(event.currentTarget)
     const address = String(form.get('email') ?? '')
@@ -1199,7 +1227,7 @@ function App() {
             {view === 'Documents' && <DocumentsPage docs={documents} setDocs={setDocuments} name={docName} setName={setDocName} type={docType} setType={setDocType} onAdd={addDocument} authenticated={Boolean(userId)} userId={userId} cloudReady={Boolean(userId && cloudDataUserId === userId)} setToast={setToast} />}
             {view === 'Professor outreach' && <ProfessorPage storageKey={`kcc-professors:${userId ?? 'guest'}`} userId={userId} />}
             {view === 'Sources & reports' && <SourcesPage universities={universities} opportunities={workspace.opportunities} failures={refreshFailures} changes={sourceChanges} timezone={workspace.profile.timezone} onRefresh={refreshSources} onReviewChange={reviewSourceChange} onExport={exportCsv} />}
-            {view === 'Settings' && <SettingsPage profile={workspace.profile} onEdit={() => { setProfileForm(workspace.profile); setModal('profile') }} onEditReadiness={() => { setProfileForm(workspace.profile); setModal('readiness') }} userId={userId} cloudReady={Boolean(userId && cloudDataUserId === userId)} remindersEnabled={remindersEnabled} onReminderChange={configureReminders} onExport={exportBackup} onImport={importBackup} onDeleteAccount={deleteAccount} />}
+            {view === 'Settings' && <SettingsPage profile={workspace.profile} onEdit={() => { setProfileForm(workspace.profile); setModal('profile') }} onEditReadiness={() => { setProfileForm(workspace.profile); setModal('readiness') }} userId={userId} cloudReady={Boolean(userId && cloudDataUserId === userId)} liveSyncState={liveSyncState} remindersEnabled={remindersEnabled} onReminderChange={configureReminders} onExport={exportBackup} onImport={importBackup} onDeleteAccount={deleteAccount} />}
             <footer className="mt-10 flex flex-wrap items-center justify-between gap-2 border-t border-[#e7e5de] py-4 text-[10px] text-slate-400"><span>{userId ? 'Authenticated workspace' : 'Browser-local workspace'} Â· Timezone: {workspace.profile.timezone}</span><span>Source facts are never verified automatically Â· Korea, Germany, and France</span></footer>
           </main>
         </div>
@@ -1619,8 +1647,9 @@ function SourcesPage({ universities, opportunities, failures, changes, timezone,
   </div>
 }
 
-function SettingsPage({ profile, onEdit, onEditReadiness, userId, cloudReady, remindersEnabled, onReminderChange, onExport, onImport, onDeleteAccount }: {
-  profile: Profile; onEdit: () => void; onEditReadiness: () => void; userId: string | null; cloudReady: boolean; remindersEnabled: boolean
+function SettingsPage({ profile, onEdit, onEditReadiness, userId, cloudReady, liveSyncState, remindersEnabled, onReminderChange, onExport, onImport, onDeleteAccount }: {
+  profile: Profile; onEdit: () => void; onEditReadiness: () => void; userId: string | null; cloudReady: boolean
+  liveSyncState: 'local' | 'connecting' | 'connected' | 'reconnecting' | 'fallback' | 'error'; remindersEnabled: boolean
   onReminderChange: (enabled: boolean) => void; onExport: () => void
   onImport: (event: React.ChangeEvent<HTMLInputElement>) => void; onDeleteAccount: () => void
 }) {
@@ -1642,7 +1671,7 @@ function SettingsPage({ profile, onEdit, onEditReadiness, userId, cloudReady, re
         <SettingRow title="Workspace storage" value={userId ? cloudReady ? 'Signed-in · cloud data loaded' : 'Signed-in · cloud setup/migration needs attention' : 'Guest · browser-local, not encrypted'} />
         <SettingRow title="Timezone" value={profile.timezone} />
         <SettingRow title="Source refresh" value="Manual checks; no scheduled fetch or external opportunity feed" />
-        <SettingRow title="Cross-device sync" value={userId && cloudReady ? 'Supabase account · live while open; refreshes when you return' : 'Local workspace only; sign in and configure Supabase for live sync'} />
+        <SettingRow title="Cross-device sync" value={!userId ? 'Local workspace only; sign in to sync' : !cloudReady ? 'Account connected · waiting for cloud data' : liveSyncState === 'connected' ? 'Cloud data loaded · live updates connected' : liveSyncState === 'fallback' ? 'Cloud data loaded · periodic sync while page is open' : liveSyncState === 'reconnecting' || liveSyncState === 'connecting' ? 'Cloud data loaded · connecting to live updates' : liveSyncState === 'error' ? 'Cloud data loaded · refresh failed; retrying while page is open' : 'Cloud data loaded'} />
         <SettingRow title="Currency assumption" value="One budget scenario currency; no conversion" />
         <label className="flex items-center justify-between gap-3 text-[10px] text-slate-500"><span>Browser reminders (app must remain open)</span><input type="checkbox" checked={remindersEnabled} onChange={event => onReminderChange(event.target.checked)} /></label>
       </div>
