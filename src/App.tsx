@@ -303,27 +303,178 @@ function App() {
   useEffect(() => {
     if (!supabase || !userId || cloudDataUserId !== userId) return
     const client = supabase
-    const channel = client.channel(`opportunity-alerts-${userId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'scholarship_opportunities', filter: `user_id=eq.${userId}` }, async payload => {
-        if (payload.eventType === 'DELETE') return
-        const rowId = (payload.new as { id?: string }).id
-        if (!rowId) return
-        const { data, error } = await client.from('scholarship_opportunities').select('id,opportunity_data').eq('id', rowId).maybeSingle()
-        if (error || !data) return
-        const incoming = normalizeOpportunity(data.opportunity_data as Partial<ScholarshipOpportunity>)
+    let active = true
+    let syncTimer = 0
+    let opportunityIds = new Set(opportunitySnapshot.current.map(item => item.id))
+    const syncAccount = async () => {
+      const [profile, universities, tasks, programs, applications, evidence, opportunities, failures, budgetRow, documents, changes] = await Promise.all([
+        client.from('profiles').select('*').eq('id', userId).maybeSingle(),
+        client.from('universities').select('id,name,city,country,intake_label,deadline_note,planning_tier,research_notes,category,rank,coverage_summary').order('created_at'),
+        client.from('tasks').select('*').order('due_date'),
+        client.from('programs').select('id,university_id,name,research_area,program_details').order('created_at'),
+        client.from('applications').select('university_id,stage,submitted_at,decision_at,decision,notes,next_action').order('created_at'),
+        client.from('source_evidence').select('id,university_id,source_type,url,intake,published_at,last_checked_at,verification_status,verifier_note,needs_review').order('created_at'),
+        client.from('scholarship_opportunities').select('id,opportunity_data').order('created_at'),
+        client.from('refresh_logs').select('id,checked_at,error_message,source_evidence_id').eq('outcome', 'failed').order('checked_at', { ascending: false }).limit(5),
+        client.from('budget_scenarios').select('*').eq('user_id', userId).maybeSingle(),
+        client.from('documents').select('*').order('created_at'),
+        client.from('source_changes').select('id,source_evidence_id,old_sha256,new_sha256,detected_at,review_status,old_content_snapshot,new_content_snapshot').order('detected_at', { ascending: false }).limit(100),
+      ])
+      if (!active) return
+      if ([universities, tasks, programs, applications, evidence, opportunities, budgetRow, documents].some(result => result.error)) {
+        setToast('Cloud updates could not be fully refreshed. Check your connection and sign-in status.')
+        return
+      }
+      const universityRows = universities.data ?? []
+      const programRows = programs.data ?? []
+      const applicationRows = applications.data ?? []
+      const evidenceRows = evidence.data ?? []
+      const nextOpportunities = (opportunities.data ?? []).map(row => normalizeOpportunity(row.opportunity_data as Partial<ScholarshipOpportunity>))
+      nextOpportunities.forEach(incoming => {
         const previous = opportunitySnapshot.current.find(item => item.id === incoming.id)
-        if (previous && compareOpportunityRank(incoming, previous) >= 0) return
-        const title = previous ? 'A better ranked opportunity arrived' : 'New opportunity arrived'
-        const detail = `${incoming.name || 'Funding opportunity'} · ${incoming.university || 'Institution not specified'} · ${tierFor(incoming)}`
-        setOpportunityAlerts(items => [{ id: `opportunity-alert-${incoming.id}-${Date.now()}`, title, detail }, ...items].slice(0, 10))
-        setToast(`${title}: ${detail}`)
-        if (remindersEnabled && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body: detail })
-        setWorkspace(current => ({ ...current, opportunities: previous
-          ? current.opportunities.map(item => item.id === incoming.id ? incoming : item)
-          : [...current.opportunities, incoming] }))
+        if (!previous && !opportunityIds.has(incoming.id)) {
+          const title = 'New opportunity arrived'
+          const detail = `${incoming.name || 'Funding opportunity'} · ${incoming.university || 'Institution not specified'} · ${tierFor(incoming)}`
+          setOpportunityAlerts(items => [{ id: `opportunity-alert-${incoming.id}`, title, detail }, ...items].slice(0, 10))
+          setToast(`${title}: ${detail}`)
+          if (remindersEnabled && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body: detail })
+        } else if (previous && compareOpportunityRank(incoming, previous) < 0) {
+          const title = 'A better ranked opportunity arrived'
+          const detail = `${incoming.name || 'Funding opportunity'} · ${incoming.university || 'Institution not specified'} · ${tierFor(incoming)}`
+          setOpportunityAlerts(items => [{ id: `opportunity-alert-${incoming.id}-${Date.now()}`, title, detail }, ...items].slice(0, 10))
+          setToast(`${title}: ${detail}`)
+          if (remindersEnabled && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body: detail })
+        }
       })
-      .subscribe()
-    return () => { void client.removeChannel(channel) }
+      opportunityIds = new Set(nextOpportunities.map(item => item.id))
+      const nextWorkspace: Workspace = {
+        profile: profile.data ? {
+          ...workspace.profile,
+          name: profile.data.name || workspace.profile.name,
+          portfolioUrl: profile.data.portfolio_url || workspace.profile.portfolioUrl,
+          githubUrl: profile.data.github_url || workspace.profile.githubUrl,
+          linkedinUrl: profile.data.linkedin_url || workspace.profile.linkedinUrl,
+          contactEmail: profile.data.contact_email || workspace.profile.contactEmail,
+          cvUrl: profile.data.cv_url || workspace.profile.cvUrl,
+          skills: profile.data.skills || workspace.profile.skills,
+          experience: profile.data.experience || workspace.profile.experience,
+          university: profile.data.institution, degree: profile.data.degree, cgpa: profile.data.cgpa,
+          ssc: profile.data.ssc_gpa, hsc: profile.data.hsc_gpa, status: profile.data.academic_status,
+          ielts: profile.data.language_test, target: profile.data.target_intake, needs: profile.data.funding_needs,
+          ieltsBookingDate: profile.data.ielts_booking_date ?? '', ieltsResultDate: profile.data.ielts_result_date ?? '',
+          ieltsScore: profile.data.ielts_score ?? '', upfrontBudget: profile.data.upfront_budget ?? '',
+          passportExpiry: profile.data.passport_expiry ?? '', timezone: profile.data.timezone,
+        } : workspace.profile,
+        universities: universityRows.map(row => ({
+          id: row.id, country: row.country ?? 'South Korea', intake: row.intake_label ?? 'Fall 2027',
+          name: row.name, city: row.city ?? '—',
+          program: programRows.find(program => program.university_id === row.id)?.name ?? 'Not specified',
+          area: programRows.find(program => program.university_id === row.id)?.research_area ?? 'Not specified',
+          applicationPortal: programRows.find(program => program.university_id === row.id)?.program_details?.applicationPortal ?? '',
+          supervisorConsent: programRows.find(program => program.university_id === row.id)?.program_details?.supervisorConsent ?? 'Unverified',
+          requirements: programRows.find(program => program.university_id === row.id)?.program_details?.requirements ?? [],
+          recommendations: programRows.find(program => program.university_id === row.id)?.program_details?.recommendations ?? [],
+          category: row.category ?? 'Match', rank: row.rank ?? 99,
+          stage: applicationRows.find(application => application.university_id === row.id)?.stage ?? 'Researching',
+          submittedAt: applicationRows.find(application => application.university_id === row.id)?.submitted_at ?? undefined,
+          decisionAt: applicationRows.find(application => application.university_id === row.id)?.decision_at ?? undefined,
+          decision: applicationRows.find(application => application.university_id === row.id)?.decision ?? undefined,
+          applicationNotes: applicationRows.find(application => application.university_id === row.id)?.notes ?? undefined,
+          nextAction: applicationRows.find(application => application.university_id === row.id)?.next_action ?? undefined,
+          coverage: row.coverage_summary ?? 'Not confirmed', deadlineNote: row.deadline_note ?? undefined,
+          planningTier: row.planning_tier ?? undefined, researchNotes: row.research_notes ?? undefined,
+          evidence: evidenceRows.filter(source => source.university_id === row.id).map(source => ({
+            url: source.url, type: source.source_type, intake: source.intake, status: source.verification_status,
+            note: source.verifier_note ?? 'Official source; manual verification pending.',
+            publishedAt: source.published_at ?? undefined, checkedAt: source.last_checked_at ?? undefined, needsReview: source.needs_review,
+          })),
+        })),
+        opportunities: nextOpportunities,
+        tasks: (tasks.data ?? []).map(row => ({
+          id: row.id, title: row.title, dueDate: row.due_date ?? '', reminderAt: row.reminder_at ?? undefined,
+          priority: row.priority ?? 'Medium', done: row.status === 'done', description: row.description ?? '',
+        })),
+      }
+      setWorkspace(current => {
+        const updatedWorkspace = {
+          ...nextWorkspace,
+          profile: profile.data ? {
+            ...current.profile,
+            name: profile.data.name || current.profile.name,
+            portfolioUrl: profile.data.portfolio_url || current.profile.portfolioUrl,
+            githubUrl: profile.data.github_url || current.profile.githubUrl,
+            linkedinUrl: profile.data.linkedin_url || current.profile.linkedinUrl,
+            contactEmail: profile.data.contact_email || current.profile.contactEmail,
+            cvUrl: profile.data.cv_url || current.profile.cvUrl,
+            skills: profile.data.skills || current.profile.skills,
+            experience: profile.data.experience || current.profile.experience,
+            university: profile.data.institution, degree: profile.data.degree, cgpa: profile.data.cgpa,
+            ssc: profile.data.ssc_gpa, hsc: profile.data.hsc_gpa, status: profile.data.academic_status,
+            ielts: profile.data.language_test, target: profile.data.target_intake, needs: profile.data.funding_needs,
+            ieltsBookingDate: profile.data.ielts_booking_date ?? '', ieltsResultDate: profile.data.ielts_result_date ?? '',
+            ieltsScore: profile.data.ielts_score ?? '', upfrontBudget: profile.data.upfront_budget ?? '',
+            passportExpiry: profile.data.passport_expiry ?? '', timezone: profile.data.timezone,
+          } : current.profile,
+        }
+        return JSON.stringify(current) === JSON.stringify(updatedWorkspace) ? current : updatedWorkspace
+      })
+      if (!budgetRow.error) {
+        const nextBudget = budgetRow.data ? {
+          currency: budgetRow.data.currency as Currency,
+          monthlyLiving: budgetRow.data.monthly_living == null ? '' : String(budgetRow.data.monthly_living),
+          annualTuition: budgetRow.data.annual_tuition == null ? '' : String(budgetRow.data.annual_tuition),
+          travel: budgetRow.data.annual_travel == null ? '' : String(budgetRow.data.annual_travel),
+          fees: budgetRow.data.annual_fees == null ? '' : String(budgetRow.data.annual_fees),
+          insurance: budgetRow.data.annual_insurance == null ? '' : String(budgetRow.data.annual_insurance),
+          guaranteedMonthly: budgetRow.data.guaranteed_monthly == null ? '' : String(budgetRow.data.guaranteed_monthly),
+        } : emptyBudget
+        setBudget(current => JSON.stringify(current) === JSON.stringify(nextBudget) ? current : nextBudget)
+      }
+      if (!documents.error) {
+        const nextDocuments = (documents.data ?? []).map(document => ({
+          id: document.id, name: document.file_name, type: document.document_type,
+          issued: document.issued_at ?? '', expiry: document.expires_at ?? '', status: uiDocumentStatus(document.availability_status),
+          translation: document.translation_status ?? 'Not reviewed', notarization: document.notarization_status ?? 'Not reviewed',
+          apostille: document.apostille_status ?? 'Not reviewed', storagePath: document.storage_path ?? null,
+        }))
+        setDocuments(current => JSON.stringify(current) === JSON.stringify(nextDocuments) ? current : nextDocuments)
+      }
+      if (!failures.error) setRefreshFailures(failures.data ?? [])
+      if (!changes.error) {
+        setSourceChanges((changes.data ?? []).flatMap(change => {
+          const source = evidenceRows.find(item => item.id === change.source_evidence_id)
+          if (!source) return []
+          return [{
+            id: change.id, sourceEvidenceId: change.source_evidence_id, oldHash: change.old_sha256,
+            newHash: change.new_sha256, detectedAt: change.detected_at, reviewStatus: change.review_status,
+            oldSnapshot: change.old_content_snapshot, newSnapshot: change.new_content_snapshot,
+            url: source.url, type: source.source_type, intake: source.intake,
+            university: universityRows.find(item => item.id === source.university_id)?.name ?? 'Source record',
+          } as SourceChange]
+        }))
+      }
+    }
+    const scheduleSync = () => {
+      window.clearTimeout(syncTimer)
+      syncTimer = window.setTimeout(() => { void syncAccount() }, 350)
+    }
+    const channel = client.channel(`account-sync-${userId}`)
+    const userTables = ['universities', 'programs', 'applications', 'source_evidence', 'tasks', 'documents', 'professor_contacts', 'source_changes', 'scholarship_opportunities', 'budget_scenarios']
+    userTables.forEach(table => channel.on('postgres_changes', {
+      event: '*', schema: 'public', table, filter: `user_id=eq.${userId}`,
+    }, scheduleSync))
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, scheduleSync)
+      .subscribe(status => { if (status === 'SUBSCRIBED') scheduleSync() })
+    const onFocus = () => { if (document.visibilityState === 'visible') scheduleSync() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      active = false
+      window.clearTimeout(syncTimer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+      void client.removeChannel(channel)
+    }
   }, [userId, cloudDataUserId, remindersEnabled])
 
   useEffect(() => {
@@ -1319,6 +1470,26 @@ function ProfessorPage({ storageKey, userId }: { storageKey: string; userId: str
   }, [storageKey, userId])
 
   useEffect(() => {
+    if (!userId || !supabase) return
+    const client = supabase
+    const refreshContacts = async () => {
+      const { data, error } = await client.from('professor_contacts').select('*').eq('user_id', userId).order('created_at')
+      if (error || !data) return
+      const fresh = data.map(entry => ({
+        id: entry.id, professor: entry.professor_name, lab: entry.lab_name ?? '', email: entry.email ?? '',
+        contacted: entry.contacted_at ?? '', followUp: entry.follow_up_at ?? '', fit: entry.research_fit ?? '',
+        papers: Array.isArray(entry.papers_read) ? entry.papers_read.join('\n') : '',
+        notes: entry.reply_summary ?? '', funding: entry.funding_statement ?? '', nextAction: entry.next_action ?? '',
+      }))
+      setEntries(current => JSON.stringify(current) === JSON.stringify(fresh) ? current : fresh)
+    }
+    const channel = client.channel(`professor-contact-sync-${userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'professor_contacts', filter: `user_id=eq.${userId}` }, () => { void refreshContacts() })
+      .subscribe()
+    return () => { void client.removeChannel(channel) }
+  }, [userId])
+
+  useEffect(() => {
     if (userId) return
     try { localStorage.setItem(storageKey, JSON.stringify(entries)) }
     catch (error) { console.error('Could not save professor contacts locally.', error); setSaveError('Could not save contacts to this browser.') }
@@ -1471,11 +1642,11 @@ function SettingsPage({ profile, onEdit, onEditReadiness, userId, cloudReady, re
         <SettingRow title="Workspace storage" value={userId ? cloudReady ? 'Signed-in · cloud data loaded' : 'Signed-in · cloud setup/migration needs attention' : 'Guest · browser-local, not encrypted'} />
         <SettingRow title="Timezone" value={profile.timezone} />
         <SettingRow title="Source refresh" value="Manual checks; no scheduled fetch or external opportunity feed" />
-        <SettingRow title="Opportunity updates" value={userId && cloudReady ? 'Live Supabase changes while this page is open' : 'Local workspace only; sign in and configure Supabase for live sync'} />
+        <SettingRow title="Cross-device sync" value={userId && cloudReady ? 'Supabase account · live while open; refreshes when you return' : 'Local workspace only; sign in and configure Supabase for live sync'} />
         <SettingRow title="Currency assumption" value="One budget scenario currency; no conversion" />
         <label className="flex items-center justify-between gap-3 text-[10px] text-slate-500"><span>Browser reminders (app must remain open)</span><input type="checkbox" checked={remindersEnabled} onChange={event => onReminderChange(event.target.checked)} /></label>
       </div>
-      <div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Deadline and task browser notifications check while the app is open. Live opportunity alerts cover changes to records in your own Supabase account; they do not discover scholarships across the web. Source refresh is still manual, and background push or email delivery is not configured. Private documents stay in private storage for signed-in users.</div>
+      <div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Sign in to the same account on each device to load the same cloud workspace. Account changes stream live while the site is open and refresh when you return to it. Browser deadline notifications need this site open. External scholarship discovery, background push, and email delivery are not configured.</div>
     </section>
     <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
       <div className="font-display text-[13px] font-bold">Export, restore & account controls</div>

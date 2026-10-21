@@ -1,14 +1,24 @@
 -- Enable signed-in clients to receive row-change events for their own
--- scholarship opportunity records. Row-level security still limits reads.
+-- workspace records. Row-level security still limits reads.
 do $$
+declare
+  table_name text;
 begin
-  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
-    and not exists (
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    foreach table_name in array array[
+      'profiles', 'universities', 'programs', 'applications', 'source_evidence',
+      'source_changes', 'tasks', 'documents', 'professor_contacts',
+      'scholarship_opportunities', 'budget_scenarios'
+    ] loop
+      if to_regclass(format('public.%I', table_name)) is not null
+        and not exists (
       select 1 from pg_publication_tables
       where pubname = 'supabase_realtime'
         and schemaname = 'public'
-        and tablename = 'scholarship_opportunities'
-    ) then
-    alter publication supabase_realtime add table public.scholarship_opportunities;
+          and tablename = table_name
+        ) then
+        execute format('alter publication supabase_realtime add table public.%I', table_name);
+      end if;
+    end loop;
   end if;
 end $$;
