@@ -10,7 +10,7 @@ import {
 } from 'recharts'
 import { ResearchSearchPage } from './ResearchSearchPage'
 import { ScholarshipsPage } from './ScholarshipsPage'
-import { fundingStatus, rankScholarshipOpportunities, tierFor } from './lib/scholarshipLogic'
+import { compareScholarshipOpportunities as compareOpportunityRank, freshVerifiedEvidence, fundingStatus, rankScholarshipOpportunities, tierFor } from './lib/scholarshipLogic'
 import { initialWorkspace } from './data'
 import { supabase, supabaseConfigured } from './lib/supabase'
 import { parseApplicantWorkbook } from './lib/workbook'
@@ -157,6 +157,8 @@ function App() {
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [refreshFailures, setRefreshFailures] = useState<RefreshFailure[]>([])
   const [sourceChanges, setSourceChanges] = useState<SourceChange[]>([])
+  const [opportunityAlerts, setOpportunityAlerts] = useState<{ id: string; title: string; detail: string }[]>([])
+  const opportunitySnapshot = useRef<ScholarshipOpportunity[]>([])
   const [cloudDataUserId, setCloudDataUserId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
   const [drawer, setDrawer] = useState<University | null>(null)
@@ -255,21 +257,74 @@ function App() {
     if (!remindersEnabled || !('Notification' in window) || Notification.permission !== 'granted') return
     const checkReminders = () => {
       const now = Date.now()
+      const todayDate = today(workspace.profile.timezone)
       let notified: string[] = []
       try { notified = JSON.parse(localStorage.getItem('kcc-notified-reminders') ?? '[]') as string[] }
       catch (error) { console.error('Could not read reminder history.', error) }
-      workspace.tasks.filter(task => !task.done && task.reminderAt && new Date(task.reminderAt).getTime() <= now &&
-        !notified.includes(task.id)).forEach(task => {
-        new Notification('Master’s application reminder', { body: task.title })
-        notified.push(task.id)
+      const dueSoon = (date: string) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
+        const days = Math.round((Date.parse(`${date}T12:00:00Z`) - Date.parse(`${todayDate}T12:00:00Z`)) / 86_400_000)
+        return days >= 0 && days <= 7 ? days : null
+      }
+      const reminders = [
+        ...workspace.tasks.filter(task => !task.done && task.dueDate).flatMap(task => {
+          const days = dueSoon(task.dueDate)
+          return days === null ? [] : [{ id: `task:${task.id}:${days}`, title: 'Task deadline approaching', body: `${task.title} · ${days === 0 ? 'due today' : `${days} days left`}` }]
+        }),
+        ...workspace.universities.filter(uni => !uni.isExample && uni.deadline).flatMap(uni => {
+          const days = dueSoon(uni.deadline!)
+          return days === null ? [] : [{ id: `university:${uni.id}:${days}`, title: 'Application deadline approaching', body: `${uni.name} · ${days === 0 ? 'due today' : `${days} days left`} (check the official source)` }]
+        }),
+        ...workspace.opportunities.filter(item => item.applicationDeadline && item.intakeVerification === 'Fall 2027 verified' &&
+          freshVerifiedEvidence((item.applicationEvidence ?? []).filter(evidence => evidence.fieldKey === 'applicationDeadline')))
+          .flatMap(item => {
+            const days = dueSoon(item.applicationDeadline)
+            return days === null ? [] : [{ id: `opportunity:${item.id}:${days}`, title: 'Verified funding deadline approaching', body: `${item.name} · ${days === 0 ? 'due today' : `${days} days left`}` }]
+          }),
+        ...workspace.tasks.filter(task => !task.done && task.reminderAt && new Date(task.reminderAt).getTime() <= now)
+          .map(task => ({ id: `reminder:${task.id}`, title: 'Master’s application reminder', body: task.title })),
+      ]
+      reminders.filter(item => !notified.includes(item.id)).forEach(item => {
+        new Notification(item.title, { body: item.body })
+        notified.push(item.id)
       })
-      try { localStorage.setItem('kcc-notified-reminders', JSON.stringify(notified)) }
+      try { localStorage.setItem('kcc-notified-reminders', JSON.stringify(notified.slice(-500))) }
       catch (error) { console.error('Could not save reminder history.', error) }
     }
     checkReminders()
     const timer = window.setInterval(checkReminders, 60_000)
     return () => window.clearInterval(timer)
-  }, [remindersEnabled, workspace.tasks])
+  }, [remindersEnabled, workspace.tasks, workspace.universities, workspace.opportunities, workspace.profile.timezone])
+
+  useEffect(() => {
+    opportunitySnapshot.current = workspace.opportunities
+  }, [workspace.opportunities])
+
+  useEffect(() => {
+    if (!supabase || !userId || cloudDataUserId !== userId) return
+    const client = supabase
+    const channel = client.channel(`opportunity-alerts-${userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'scholarship_opportunities', filter: `user_id=eq.${userId}` }, async payload => {
+        if (payload.eventType === 'DELETE') return
+        const rowId = (payload.new as { id?: string }).id
+        if (!rowId) return
+        const { data, error } = await client.from('scholarship_opportunities').select('id,opportunity_data').eq('id', rowId).maybeSingle()
+        if (error || !data) return
+        const incoming = normalizeOpportunity(data.opportunity_data as Partial<ScholarshipOpportunity>)
+        const previous = opportunitySnapshot.current.find(item => item.id === incoming.id)
+        if (previous && compareOpportunityRank(incoming, previous) >= 0) return
+        const title = previous ? 'A better ranked opportunity arrived' : 'New opportunity arrived'
+        const detail = `${incoming.name || 'Funding opportunity'} · ${incoming.university || 'Institution not specified'} · ${tierFor(incoming)}`
+        setOpportunityAlerts(items => [{ id: `opportunity-alert-${incoming.id}-${Date.now()}`, title, detail }, ...items].slice(0, 10))
+        setToast(`${title}: ${detail}`)
+        if (remindersEnabled && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body: detail })
+        setWorkspace(current => ({ ...current, opportunities: previous
+          ? current.opportunities.map(item => item.id === incoming.id ? incoming : item)
+          : [...current.opportunities, incoming] }))
+      })
+      .subscribe()
+    return () => { void client.removeChannel(channel) }
+  }, [userId, cloudDataUserId, remindersEnabled])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -438,7 +493,28 @@ function App() {
   const universities = workspace.universities
   const openTasks = tasks.filter(task => !task.done)
   const overdue = openTasks.filter(task => task.dueDate && task.dueDate < today(workspace.profile.timezone))
+  const daysUntil = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? Math.round((Date.parse(`${date}T12:00:00Z`) - Date.parse(`${today(workspace.profile.timezone)}T12:00:00Z`)) / 86_400_000)
+    : null
+  const deadlineAlerts = [
+    ...openTasks.flatMap(task => {
+      const days = daysUntil(task.dueDate)
+      return days !== null && days >= 0 && days <= 7 ? [{ id: `task-deadline-${task.id}`, title: days === 0 ? 'Task due today' : `Task due in ${days} days`, detail: task.title }] : []
+    }),
+    ...universities.filter(uni => !uni.isExample).flatMap(uni => {
+      const days = uni.deadline ? daysUntil(uni.deadline) : null
+      return days !== null && days >= 0 && days <= 7 ? [{ id: `uni-deadline-${uni.id}`, title: days === 0 ? 'Application deadline today' : `Application deadline in ${days} days`, detail: `${uni.name} · recorded deadline; verify against the official notice` }] : []
+    }),
+    ...workspace.opportunities.filter(item => item.intakeVerification === 'Fall 2027 verified' &&
+      freshVerifiedEvidence((item.applicationEvidence ?? []).filter(evidence => evidence.fieldKey === 'applicationDeadline')))
+      .flatMap(item => {
+        const days = daysUntil(item.applicationDeadline)
+        return days !== null && days >= 0 && days <= 7 ? [{ id: `funding-deadline-${item.id}`, title: days === 0 ? 'Verified funding deadline today' : `Verified funding deadline in ${days} days`, detail: item.name }] : []
+      }),
+  ]
   const notificationItems = [
+    ...opportunityAlerts,
+    ...deadlineAlerts,
     ...overdue.map(task => ({ id: `task-${task.id}`, title: 'Overdue task', detail: task.title })),
     ...refreshFailures.map(failure => ({ id: `refresh-${failure.id}`, title: 'Source refresh failed', detail: failure.error_message ?? 'Review the source refresh log.' })),
     ...universities.flatMap(uni => uni.evidence.filter(item => item.needsReview).map(item => ({ id: `changed-${uni.id}-${item.url}`, title: 'Official page changed â€” review required', detail: uni.name }))),
@@ -954,7 +1030,7 @@ function App() {
             </div>
           </header>
           {mobileMenu && <nav className="surface fixed inset-x-3 top-[62px] z-40 grid grid-cols-2 gap-1 rounded-xl border border-[#e7e5de] bg-white p-2 shadow-lg sm:grid-cols-3 lg:hidden">{nav.map(({ label, icon: Icon }) => <button key={label} onClick={() => { setView(label); setMobileMenu(false) }} className={`flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[10px] ${view === label ? 'bg-[#eaf1ed] font-semibold text-teal' : 'text-slate-600 hover:bg-[#f5f4ef]'}`}><Icon size={14} />{label}</button>)}<button onClick={() => { setView('Settings'); setMobileMenu(false) }} className="flex items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[10px] text-slate-600"><Settings size={14} />Settings</button></nav>}
-          {notificationOpen && <div className="surface absolute right-3 top-[62px] z-40 w-[min(360px,calc(100vw-24px))] rounded-xl border border-[#e7e5de] bg-white p-3 shadow-xl"><div className="flex items-center justify-between border-b border-[#eeede8] px-1 pb-2"><div className="text-[11px] font-semibold">Workspace alerts</div><button onClick={() => setNotificationOpen(false)} aria-label="Close notifications"><X size={14} /></button></div>{notificationItems.length ? <div className="max-h-72 divide-y divide-[#f0efe9] overflow-y-auto">{notificationItems.map(item => <div key={item.id} className="py-2.5"><div className="text-[10px] font-semibold">{item.title}</div><div className="mt-0.5 text-[9px] text-slate-500">{item.detail}</div></div>)}</div> : <div className="py-4 text-center text-[10px] text-slate-500">No alerts from current workspace data.</div>}<p className="mt-2 border-t border-[#eeede8] pt-2 text-[9px] leading-relaxed text-slate-400">Derived from current tasks, source checks, and document checklist. No simulated alerts.</p></div>}
+          {notificationOpen && <div className="surface absolute right-3 top-[62px] z-40 w-[min(360px,calc(100vw-24px))] rounded-xl border border-[#e7e5de] bg-white p-3 shadow-xl"><div className="flex items-center justify-between border-b border-[#eeede8] px-1 pb-2"><div className="text-[11px] font-semibold">Workspace alerts</div><button onClick={() => setNotificationOpen(false)} aria-label="Close notifications"><X size={14} /></button></div>{notificationItems.length ? <div className="max-h-72 divide-y divide-[#f0efe9] overflow-y-auto">{notificationItems.map(item => <div key={item.id} className="py-2.5"><div className="text-[10px] font-semibold">{item.title}</div><div className="mt-0.5 text-[9px] text-slate-500">{item.detail}</div></div>)}</div> : <div className="py-4 text-center text-[10px] text-slate-500">No alerts from current workspace data.</div>}<p className="mt-2 border-t border-[#eeede8] pt-2 text-[9px] leading-relaxed text-slate-400">Deadlines use dates in this workspace; opportunity updates stream from your signed-in Supabase account. External scholarship discovery and background alerts are not configured.</p></div>}
 
           <main className="mx-auto max-w-[1450px] p-4 sm:p-7 xl:px-10">
             <div className="mb-6 flex items-end justify-between">
@@ -1394,11 +1470,12 @@ function SettingsPage({ profile, onEdit, onEditReadiness, userId, cloudReady, re
       <div className="mt-4 space-y-3">
         <SettingRow title="Workspace storage" value={userId ? cloudReady ? 'Signed-in · cloud data loaded' : 'Signed-in · cloud setup/migration needs attention' : 'Guest · browser-local, not encrypted'} />
         <SettingRow title="Timezone" value={profile.timezone} />
-        <SettingRow title="Source refresh" value="Manual only; fetch does not verify a claim" />
+        <SettingRow title="Source refresh" value="Manual checks; no scheduled fetch or external opportunity feed" />
+        <SettingRow title="Opportunity updates" value={userId && cloudReady ? 'Live Supabase changes while this page is open' : 'Local workspace only; sign in and configure Supabase for live sync'} />
         <SettingRow title="Currency assumption" value="One budget scenario currency; no conversion" />
         <label className="flex items-center justify-between gap-3 text-[10px] text-slate-500"><span>Browser reminders (app must remain open)</span><input type="checkbox" checked={remindersEnabled} onChange={event => onReminderChange(event.target.checked)} /></label>
       </div>
-      <div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Private documents stay in private storage for signed-in users. JSON backups include document metadata, not uploaded file bytes. Browser reminders are best-effort and are not a substitute for an independent calendar reminder.</div>
+      <div className="mt-4 rounded-lg border border-[#ede8db] bg-[#fbf8f0] p-3 text-[10px] leading-relaxed text-[#827451]">Deadline and task browser notifications check while the app is open. Live opportunity alerts cover changes to records in your own Supabase account; they do not discover scholarships across the web. Source refresh is still manual, and background push or email delivery is not configured. Private documents stay in private storage for signed-in users.</div>
     </section>
     <section className="surface rounded-xl border border-[#e7e5de] bg-white p-5">
       <div className="font-display text-[13px] font-bold">Export, restore & account controls</div>
