@@ -9,6 +9,7 @@ import {
   type ScholarshipFilterKey,
 } from './lib/scholarshipLogic'
 import { safeHttpsUrl } from './lib/safeUrl'
+import { internationalScholarships, koreaMarch2027, more2027ScholarshipsUrl } from './scholarshipCalendar'
 
 type FilterKey = ScholarshipFilterKey
 const filterLabels: Record<FilterKey, string> = {
@@ -85,6 +86,9 @@ export function ScholarshipsPage({ opportunities, profile, onSave, onDelete }: {
   }
 
   return <div className="space-y-4">
+    <CalendarSection title="South Korea · March 2027 intake" subtitle="Upcoming admission timeline · Bachelor’s & Master’s" entries={koreaMarch2027} />
+    <CalendarSection title="International scholarships · 2027" subtitle="Separate global opportunities · deadlines marked expected or country-specific need confirmation" entries={internationalScholarships} moreUrl={more2027ScholarshipsUrl} />
+    <p className="px-1 text-[9px] text-slate-400">The supplied post mentions the Louvre Museum, Paris, as an attention-grabbing photo location.</p>
     <section className="surface rounded-xl border border-[#eadfca] bg-[#fbf7ed] p-4 text-[10px] leading-relaxed text-[#806e48]">
       <strong>Default view: verified full funding + IELTS not required + strongest profile match.</strong>
       No match is assumed from an MOI letter, university reputation, or an old intake. “Unknown” stays unknown.
@@ -130,6 +134,24 @@ export function ScholarshipsPage({ opportunities, profile, onSave, onDelete }: {
       </div>
     </section>
   </div>
+}
+
+function CalendarSection({ title, subtitle, entries, moreUrl }: {
+  title: string; subtitle: string; entries: { name: string; level?: string; dates: string[]; url?: string }[]; moreUrl?: string
+}) {
+  return <section className="surface rounded-xl border border-[#e7e5de] bg-white p-4">
+    <div className="mb-3"><h2 className="font-display text-[13px] font-bold">{title}</h2><p className="mt-1 text-[10px] text-slate-500">{subtitle}</p></div>
+    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+      {entries.map(entry => <article key={entry.name} className="rounded-lg bg-[#faf9f6] p-3">
+        <h3 className="text-[10px] font-semibold">{entry.name}</h3>
+        {entry.level && <p className="mt-1 text-[9px] text-slate-500">{entry.level}</p>}
+        <ul className="mt-2 space-y-1 text-[9px] text-slate-600">{entry.dates.map(date => <li key={date}>📅 {date}</li>)}</ul>
+        {entry.url && <a href={entry.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-[9px] font-semibold text-teal hover:underline">Official link <ExternalLink size={10} /></a>}
+      </article>)}
+    </div>
+    {moreUrl && <p className="mt-3 text-[9px] text-slate-500">The supplied roundup says there are 40+ opportunities. <a href={moreUrl} target="_blank" rel="noreferrer" className="font-semibold text-teal hover:underline">See the full list <ExternalLink size={10} className="inline" /></a></p>}
+    <p className="mt-2 text-[9px] text-slate-400">Planning leads supplied by the user; deadlines and eligibility are not verified here. Confirm each current intake on the official source.</p>
+  </section>
 }
 
 function OpportunityCard({ opportunity: item, fallback, matches, onEdit, onDelete }: {
